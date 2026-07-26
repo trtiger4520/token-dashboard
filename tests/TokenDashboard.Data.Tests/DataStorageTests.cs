@@ -142,6 +142,146 @@ public sealed class DataStorageTests
     }
 
     [Fact]
+    public void ClaudeProviderJsonlPreservesMessagesToolsAndUsage()
+    {
+        var result = new ClaudeCodeCliAdapter().Parse(
+            Fixture("claude-provider-shape-synthetic.jsonl"),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, result.Events.Count);
+        Assert.Empty(result.Errors);
+        Assert.Equal("claude-provider-session", result.Events[0].SessionId);
+        Assert.Equal("Synthetic provider prompt", result.Events[0].Prompt);
+        Assert.Equal("Synthetic provider response\n{\"path\":\"synthetic.txt\"}", result.Events[1].Response);
+        Assert.Equal("claude-sonnet-4", result.Events[1].Model);
+        Assert.Equal("synthetic-tool", result.Events[1].Tool);
+        Assert.Equal(100, result.Events[1].TokenCounts[TokenType.Input]);
+        Assert.Equal(30, result.Events[1].TokenCounts[TokenType.Create("cache-read")]);
+        Assert.Equal(10, result.Events[1].TokenCounts[TokenType.Create("cache-write-5m")]);
+        Assert.Equal(5, result.Events[1].TokenCounts[TokenType.Create("cache-write-1h")]);
+        Assert.Equal(20, result.Events[1].TokenCounts[TokenType.Output]);
+    }
+
+    [Fact]
+    public void CodexProviderJsonlAssociatesTurnMessagesToolsAndUsage()
+    {
+        var result = new CodexAppAdapter().Parse(
+            Fixture("codex-provider-shape-synthetic.jsonl"),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(4, result.Events.Count);
+        Assert.Empty(result.Errors);
+        Assert.All(result.Events, item => Assert.Equal("codex-provider-session", item.SessionId));
+        Assert.All(result.Events, item => Assert.Equal("codex-provider-turn", item.TurnId));
+        Assert.All(result.Events, item => Assert.Equal("gpt-5.4", item.Model));
+        Assert.Equal("Synthetic Codex prompt", result.Events[0].Prompt);
+        Assert.Equal("synthetic-shell", result.Events[1].Tool);
+        Assert.Equal("Synthetic tool output", result.Events[2].Response);
+
+        var usage = result.Events[3].TokenCounts;
+        Assert.Equal(60, usage[TokenType.Input]);
+        Assert.Equal(30, usage[TokenType.CachedInput]);
+        Assert.Equal(10, usage[TokenType.Create("cache-write-input")]);
+        Assert.Equal(30, usage[TokenType.Output]);
+        Assert.Equal(20, usage[TokenType.Reasoning]);
+        Assert.Equal(150, usage.Values.Sum());
+    }
+
+    [Fact]
+    public void ProviderJsonlImportsConversationAndTokenBreakdown()
+    {
+        using var connection = OpenConnection();
+        var service = new ImportService(connection);
+
+        var claude = service.Import(
+            "claude-provider-import",
+            Fixture("claude-provider-shape-synthetic.jsonl"),
+            new ClaudeCodeCliAdapter());
+        var codex = service.Import(
+            "codex-provider-import",
+            Fixture("codex-provider-shape-synthetic.jsonl"),
+            new CodexAppAdapter());
+
+        Assert.Equal(2, claude.ImportedEventCount);
+        Assert.Equal(4, codex.ImportedEventCount);
+        Assert.Equal(2L, Scalar<long>(connection, "SELECT COUNT(*) FROM sessions;"));
+        Assert.Equal(3L, Scalar<long>(connection, "SELECT COUNT(*) FROM turns;"));
+        Assert.Equal(6L, Scalar<long>(connection, "SELECT COUNT(*) FROM sub_events;"));
+        Assert.Equal(10L, Scalar<long>(connection, "SELECT COUNT(*) FROM token_usages;"));
+        Assert.NotEmpty(FtsIndexingService.Search(connection, "provider prompt"));
+        Assert.NotEmpty(FtsIndexingService.Search(connection, "tool output"));
+    }
+
+    [Fact]
+    public void ClaudeMetadataOnlyJsonlDoesNotFallBackToGenericTimestampValidation()
+    {
+        var path = WriteTemporaryJsonLines(
+            """{"type":"agent-name","agentName":"synthetic-agent","sessionId":"claude-metadata-session"}""",
+            """{"type":"ai-title","aiTitle":"Synthetic title","sessionId":"claude-metadata-session"}""");
+        try
+        {
+            var result = new ClaudeCodeCliAdapter().Parse(path, TestContext.Current.CancellationToken);
+
+            Assert.Empty(result.Events);
+            Assert.Empty(result.Errors);
+            Assert.Equal(AdapterCapabilityStatus.Available, result.Status);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Theory]
+    [InlineData("""{"id":"synthetic-task","subject":"Synthetic task","status":"pending"}""")]
+    [InlineData("""{"agentType":"synthetic-agent","description":"Synthetic agent","toolUseId":"synthetic-tool"}""")]
+    public void ClaudeMetadataJsonDoesNotReportMissingEventTimestamps(string content)
+    {
+        var path = WriteTemporaryFile(".json", content);
+        try
+        {
+            var result = new ClaudeCodeAppAdapter().Parse(path, TestContext.Current.CancellationToken);
+
+            Assert.Empty(result.Events);
+            Assert.Empty(result.Errors);
+            Assert.Equal(AdapterCapabilityStatus.Available, result.Status);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ClaudeSidechainImportAllocatesAUniqueSequenceWithinTheParentSession()
+    {
+        var parentPath = WriteTemporaryJsonLines(
+            """{"type":"user","sessionId":"claude-shared-session","uuid":"parent-turn","timestamp":"2026-07-26T00:00:00Z","message":{"role":"user","content":"Synthetic parent prompt"}}""");
+        var sidechainPath = WriteTemporaryJsonLines(
+            """{"type":"assistant","sessionId":"claude-shared-session","uuid":"sidechain-turn","timestamp":"2026-07-26T00:00:01Z","isSidechain":true,"agentId":"synthetic-agent","message":{"role":"assistant","content":[{"type":"text","text":"Synthetic sidechain response"}],"usage":{"input_tokens":10,"output_tokens":5}}}""");
+        try
+        {
+            using var connection = OpenConnection();
+            var service = new ImportService(connection);
+            var adapter = new ClaudeCodeAppAdapter();
+
+            var parent = service.Import("claude-parent-import", parentPath, adapter);
+            var sidechain = service.Import("claude-sidechain-import", sidechainPath, adapter);
+
+            Assert.Equal(1, parent.ImportedEventCount);
+            Assert.Equal(1, sidechain.ImportedEventCount);
+            Assert.Equal(2L, Scalar<long>(connection, "SELECT COUNT(*) FROM turns WHERE session_id = 'claude-shared-session';"));
+            Assert.Equal(2L, Scalar<long>(connection, "SELECT COUNT(DISTINCT sequence) FROM turns WHERE session_id = 'claude-shared-session';"));
+            Assert.Equal(2L, Scalar<long>(connection, "SELECT COUNT(*) FROM sub_events WHERE session_id = 'claude-shared-session';"));
+        }
+        finally
+        {
+            File.Delete(parentPath);
+            File.Delete(sidechainPath);
+        }
+    }
+
+    [Fact]
     public void UnknownExtensionUsesTolerantFallback()
     {
         var path = Path.Combine(Path.GetTempPath(), $"token-dashboard-fallback-{Guid.NewGuid():N}.log");
@@ -286,4 +426,17 @@ public sealed class DataStorageTests
     }
 
     private static string Fixture(string name) => Path.Combine(AppContext.BaseDirectory, "fixtures", "public", name);
+
+    private static string WriteTemporaryJsonLines(params string[] lines)
+    {
+        var path = WriteTemporaryFile(".jsonl", string.Join(Environment.NewLine, lines));
+        return path;
+    }
+
+    private static string WriteTemporaryFile(string extension, string content)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"token-dashboard-provider-{Guid.NewGuid():N}{extension}");
+        File.WriteAllText(path, content);
+        return path;
+    }
 }

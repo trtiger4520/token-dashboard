@@ -89,6 +89,33 @@ public sealed class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task ExplicitContainerPortsPreserveLoopbackBinding()
+    {
+        var listenPort = AvailableLoopbackPort();
+        await using var app = ProgramEntry.BuildApplication([
+            "--TokenDashboard:ConnectionString=Data Source=:memory:;Mode=Memory;Cache=Shared",
+            "--TokenDashboard:OpenBrowser=false",
+            $"--TokenDashboard:ListenPort={listenPort}",
+            "--TokenDashboard:BrowserPort=18080"
+        ]);
+        await app.StartAsync(TestContext.Current.CancellationToken);
+        try
+        {
+            var addresses = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses;
+            var address = new Uri(Assert.Single(addresses));
+            Assert.Equal("127.0.0.1", address.Host);
+            Assert.Equal(listenPort, address.Port);
+            Assert.Equal(
+                18080,
+                app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<ApiOptions>>().Value.BrowserPort);
+        }
+        finally
+        {
+            await app.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Fact]
     public async Task DiscoveryAndCapabilitiesExposeFourAdapters()
     {
         using var factory = new ApiFactory();
@@ -540,6 +567,13 @@ public sealed class ApiIntegrationTests
         var path = Path.Combine(Path.GetTempPath(), $"token-dashboard-api-{Guid.NewGuid():N}.json");
         File.WriteAllText(path, content);
         return path;
+    }
+
+    private static int AvailableLoopbackPort()
+    {
+        using var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 
     private static void WriteFile(string path, string content)

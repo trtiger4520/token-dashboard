@@ -17,8 +17,21 @@ public static class ProgramEntry
 
     public static WebApplication BuildApplication(string[] args)
     {
-        var builder = WebApplication.CreateBuilder(args);
-        builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0));
+        var webRootPath = ResolveWebRootPath();
+        var builder = webRootPath is null
+            ? WebApplication.CreateBuilder(args)
+            : WebApplication.CreateBuilder(new WebApplicationOptions
+            {
+                Args = args,
+                WebRootPath = webRootPath
+            });
+        var listenPort = builder.Configuration.GetValue("TokenDashboard:ListenPort", 0);
+        if (listenPort is < 0 or > 65535)
+        {
+            throw new InvalidOperationException("Listen port must be between 0 and 65535");
+        }
+
+        builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, listenPort));
         builder.Services.AddOptions<ApiOptions>().BindConfiguration("TokenDashboard");
         builder.Services.AddSingleton<SessionKeyService>();
         builder.Services.AddSingleton<IBrowserLauncher, ProcessBrowserLauncher>();
@@ -130,6 +143,21 @@ public static class ProgramEntry
         NullIfEmpty(request.Query["tool"].ToString()),
         NullIfEmpty(request.Query["model"].ToString()),
         NullIfEmpty(request.Query["tokenType"].ToString()));
+
+    private static string? ResolveWebRootPath()
+    {
+        var currentDirectory = Directory.GetCurrentDirectory();
+        var candidates = new[]
+        {
+            Path.Combine(AppContext.BaseDirectory, "wwwroot"),
+            Path.Combine(currentDirectory, "src", "TokenDashboard.Web", "dist"),
+            Path.GetFullPath(Path.Combine(currentDirectory, "..", "TokenDashboard.Web", "dist")),
+            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "TokenDashboard.Web", "dist"))
+        };
+        return candidates
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(path => File.Exists(Path.Combine(path, "index.html")));
+    }
 
     private static string? NullIfEmpty(string value) => string.IsNullOrWhiteSpace(value) ? null : value;
 

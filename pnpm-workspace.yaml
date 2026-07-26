@@ -1,2 +1,5 @@
 packages:
-  - apps/*
+  - src/TokenDashboard.Web
+
+allowBuilds:
+  esbuild: true

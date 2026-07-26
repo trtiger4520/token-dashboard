@@ -1,6 +1,7 @@
-.vs/
+﻿.vs/
 .idea/
 .vscode/
+.current/
 
 **/bin/
 **/obj/

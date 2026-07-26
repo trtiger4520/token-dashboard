@@ -334,6 +334,12 @@ internal static class SourceFileParser
         try
         {
             using var document = JsonDocument.Parse(text);
+            if (adapterKind is SourceAdapterKind.ClaudeCodeApp or SourceAdapterKind.ClaudeCodeCli &&
+                IsClaudeMetadataDocument(document.RootElement))
+            {
+                return new ParseResult([], [], AdapterCapabilityStatus.Available);
+            }
+
             var elements = document.RootElement.ValueKind == JsonValueKind.Array
                 ? document.RootElement.EnumerateArray().ToArray()
                 : [document.RootElement];
@@ -345,8 +351,28 @@ internal static class SourceFileParser
         }
     }
 
+    private static bool IsClaudeMetadataDocument(JsonElement root)
+    {
+        var elements = root.ValueKind == JsonValueKind.Array
+            ? root.EnumerateArray().ToArray()
+            : [root];
+        return elements.Length > 0 && elements.All(static element =>
+            element.ValueKind == JsonValueKind.Object &&
+            ((element.TryGetProperty("id", out _) &&
+              element.TryGetProperty("subject", out _) &&
+              element.TryGetProperty("status", out _)) ||
+             (element.TryGetProperty("agentType", out _) &&
+              element.TryGetProperty("toolUseId", out _))));
+    }
+
     private static ParseResult ParseJsonLines(string text, SourceAdapterKind adapterKind, CancellationToken cancellationToken)
     {
+        var providerResult = ProviderLogParser.ParseJsonLines(text, adapterKind, cancellationToken);
+        if (providerResult.Recognized)
+        {
+            return providerResult.Result;
+        }
+
         var events = new List<NormalizedEvent>();
         var errors = new List<ParseError>();
         var lineNumber = 0;

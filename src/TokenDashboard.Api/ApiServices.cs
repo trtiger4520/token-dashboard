@@ -23,7 +23,11 @@ public sealed class ApiOptions
 
     public string? BrowserHost { get; set; }
 
+    public int? BrowserPort { get; set; }
+
     public bool EmitStartupDiagnostics { get; set; }
+
+    public int ListenPort { get; set; }
 
     public string? SourceHome { get; set; }
 
@@ -221,7 +225,13 @@ public sealed class BrowserStartupService : IHostedService
         }
 
         var host = options.Value.BrowserHost ?? (address.Host == "[::1]" ? "127.0.0.1" : address.Host);
-        var url = $"{address.Scheme}://{host}:{address.Port}/#key={Uri.EscapeDataString(key.Key)}";
+        var port = options.Value.BrowserPort ?? address.Port;
+        if (port is <= 0 or > 65535)
+        {
+            throw new InvalidOperationException("Browser port must be between 1 and 65535");
+        }
+
+        var url = $"{address.Scheme}://{host}:{port}/#key={Uri.EscapeDataString(key.Key)}";
         if (emitDiagnostics)
         {
             Console.WriteLine($"TOKEN_DASHBOARD_STARTUP_URL={url}");

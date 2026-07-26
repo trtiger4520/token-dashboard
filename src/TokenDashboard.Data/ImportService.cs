@@ -146,6 +146,24 @@ public sealed class ImportService
             ("$sequence", item.Sequence),
             ("$occurredAtUtc", Utc(item.OccurredAtUtc)),
             ("$sourceTimezone", item.SourceTimeZone));
+
+        Execute(transaction, """
+            INSERT OR IGNORE INTO turns
+                (turn_id, session_id, sequence, occurred_at_utc, source_timezone)
+            SELECT
+                $turnId,
+                $sessionId,
+                COALESCE(MAX(sequence) + 1, 0),
+                $occurredAtUtc,
+                $sourceTimezone
+            FROM turns
+            WHERE session_id = $sessionId
+              AND NOT EXISTS (SELECT 1 FROM turns WHERE turn_id = $turnId);
+            """,
+            ("$turnId", item.TurnId!),
+            ("$sessionId", item.SessionId!),
+            ("$occurredAtUtc", Utc(item.OccurredAtUtc)),
+            ("$sourceTimezone", item.SourceTimeZone));
     }
 
     private static void InsertSubEvent(SqliteTransaction transaction, NormalizedEvent item)

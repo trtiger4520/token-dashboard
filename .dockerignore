@@ -1,0 +1,14 @@
+.git
+.current
+.vs
+.idea
+.vscode
+**/bin
+**/obj
+**/node_modules
+src/TokenDashboard.Web/dist
+tests
+artifacts
+*.db
+*.db-shm
+*.db-wal
