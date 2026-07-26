@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="src/TokenDashboard.Core/TokenDashboard.Core.csproj" />
+  <Project Path="src/TokenDashboard.Data/TokenDashboard.Data.csproj" />
+  <Project Path="src/TokenDashboard.Api/TokenDashboard.Api.csproj" />
+  <Project Path="tests/TokenDashboard.Core.Tests/TokenDashboard.Core.Tests.csproj" />
+  <Project Path="tests/TokenDashboard.Data.Tests/TokenDashboard.Data.Tests.csproj" />
+  <Project Path="tests/TokenDashboard.Api.Tests/TokenDashboard.Api.Tests.csproj" />
+</Solution>
