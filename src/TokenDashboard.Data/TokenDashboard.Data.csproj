@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>TokenDashboard.Data</RootNamespace>
+    <AssemblyName>TokenDashboard.Data</AssemblyName>
+    <NuGetAuditMode>direct</NuGetAuditMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\TokenDashboard.Core\TokenDashboard.Core.csproj" />
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+  </ItemGroup>
+</Project>

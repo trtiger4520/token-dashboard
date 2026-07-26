@@ -1,0 +1,2 @@
+source_id,session_id,turn_id,event_type,role,prompt,response,model,subagent,workflow,occurred_at_utc,source_timezone,input_tokens,output_tokens,synthetic
+codex-app-public,codex-csv-session,codex-csv-turn,turn.completed,user,Compare models,Comparison complete,codex-synthetic,analyst,cost-review,2026-01-04T03:04:05Z,UTC,100,50,true

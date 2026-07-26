@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>TokenDashboard.Data.Tests</RootNamespace>
+    <AssemblyName>TokenDashboard.Data.Tests</AssemblyName>
+    <NuGetAuditMode>direct</NuGetAuditMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\TokenDashboard.Data\TokenDashboard.Data.csproj" />
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.analyzers" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\fixtures\public\**\*" LinkBase="fixtures\public" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

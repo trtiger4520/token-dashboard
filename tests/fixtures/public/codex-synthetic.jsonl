@@ -1,0 +1,3 @@
+{"source_id":"codex-cli-public","session_id":"codex-session-1","turn_id":"codex-turn-1","event_type":"turn.completed","role":"user","prompt":"Inspect the migration","response":"The migration is idempotent","model":"codex-synthetic","occurred_at_utc":"2026-01-03T03:04:05Z","source_timezone":"UTC","input_tokens":210,"output_tokens":90,"extra_future_field":"ignored","synthetic":true}
+not-json
+{"source_id":"codex-cli-public","session_id":"codex-session-1","turn_id":"codex-turn-2","event_type":"tool.completed","role":"tool","response":"Tests passed","model":"codex-synthetic","tool":"dotnet-test","workflow":"verification","occurred_at_utc":"2026-01-03T03:14:05Z","source_timezone":"UTC","output_tokens":30,"synthetic":true}

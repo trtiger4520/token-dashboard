@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>TokenDashboard.Core</RootNamespace>
+    <AssemblyName>TokenDashboard.Core</AssemblyName>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,22 @@
+[
+  {
+    "source_id": "claude-app-public",
+    "session_id": "claude-session-1",
+    "turn_id": "claude-turn-1",
+    "event_type": "turn.completed",
+    "role": "user",
+    "prompt": "Summarize the release notes",
+    "response": "The release contains three changes",
+    "model": "claude-synthetic",
+    "tool": "release-reader",
+    "subagent": "researcher",
+    "workflow": "release-review",
+    "occurred_at_utc": "2026-01-02T03:04:05Z",
+    "source_timezone": "Asia/Taipei",
+    "input_tokens": 120,
+    "output_tokens": 80,
+    "cached_input_tokens": 40,
+    "tags": ["release", "review"],
+    "synthetic": true
+  }
+]

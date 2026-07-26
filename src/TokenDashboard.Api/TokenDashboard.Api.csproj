@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <RootNamespace>TokenDashboard.Api</RootNamespace>
+    <AssemblyName>TokenDashboard.Api</AssemblyName>
+    <NuGetAuditMode>direct</NuGetAuditMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\TokenDashboard.Core\TokenDashboard.Core.csproj" />
+    <ProjectReference Include="..\TokenDashboard.Data\TokenDashboard.Data.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('..\TokenDashboard.Web\dist')">
+    <Content Include="..\TokenDashboard.Web\dist\**\*">
+      <Link>wwwroot\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+</Project>
