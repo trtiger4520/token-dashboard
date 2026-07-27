@@ -7,6 +7,7 @@ FIRST VIEWPORT: The left rail fixes scope, the center places KPIs and comparison
 FORM: Operate-mode three-column control rail / comparison matrix / inspector, inherited from the route dashboard surface brief
 */
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { extractStartupKey, TokenDashboardClient, type SourceDiscoveryResult, type SyncRequest } from './api'
 import { isValidDateRange, resolveDateRange, resolveDayRange, type DatePreset } from './dateRange'
 import { createEmptyDashboardData, formatDateLabel, formatNumber, formatUsd, totalTokens, type DashboardData, type DashboardQuery, type EventKind, type SearchResult, type SessionRecord, type TagRecord, type TokenType } from './types'
@@ -45,6 +46,20 @@ const deleteDialog = ref<HTMLDialogElement | null>(null)
 const exportDialog = ref<HTMLDialogElement | null>(null)
 const lastDialogTrigger = ref<HTMLElement | null>(null)
 const isDark = ref(false)
+const routePath = ref(window.location.pathname)
+let routerPush: ((to: string) => Promise<unknown>) | undefined
+try {
+  const route = useRoute()
+  const router = useRouter()
+  routePath.value = route.path
+  routerPush = async (to: string) => {
+    routePath.value = to
+    return router.push(to)
+  }
+} catch {
+  // App is also mounted directly by unit tests without a router plugin
+}
+const currentRoute = computed(() => routePath.value === '/pricing' ? '/pricing' : '/dashboard')
 const selectedDate = ref('')
 const datePreset = ref<DatePreset>('30')
 const dateRange = reactive(resolveDateRange('30'))
@@ -61,6 +76,14 @@ const averageCache = computed(() => data.value.overview.cacheHitRate)
 const maxDailyTokens = computed(() => Math.max(...data.value.daily.map((day) => day.tokens), 1))
 const heatmapDays = computed(() => (data.value.heatmap.length ? data.value.heatmap : data.value.daily).map((day) => ({ ...day, intensity: Math.max(1, Math.ceil((day.tokens / maxDailyTokens.value) * 5)) })))
 const sourceStatus = computed(() => discoveredSources.value.length ? `已檢查 ${discoveredSources.value.length} 個 adapter` : data.value.sources.length ? `已載入 ${data.value.sources.length} 個來源` : '來源未提供')
+
+function navigate(route: '/dashboard' | '/pricing'): void {
+  if (routerPush) void routerPush(route)
+  else {
+    window.history.pushState({}, '', route)
+    routePath.value = route
+  }
+}
 
 function dashboardQuery(): DashboardQuery {
   const preset = datePreset.value === '7' ? '7d' : datePreset.value === '90' ? '90d' : datePreset.value === 'custom' ? 'custom' : datePreset.value
@@ -367,6 +390,7 @@ onMounted(() => {
         <span class="topbar-divider" aria-hidden="true"></span>
         <span class="mono">UTC / {{ dateRange.startDate }} — {{ dateRange.endDate }}</span>
       </div>
+      <nav class="topbar-nav" aria-label="主要導覽"><button type="button" :class="{ active: currentRoute === '/dashboard' }" @click="navigate('/dashboard')">Dashboard</button><button type="button" :class="{ active: currentRoute === '/pricing' }" @click="navigate('/pricing')">Pricing</button></nav>
       <div class="topbar-actions">
         <span class="sync-indicator" :class="`sync-${syncState}`" role="status">{{ syncState === 'loading' ? '同步中' : syncState === 'partial' ? '部分同步' : syncState === 'error' ? '同步錯誤' : syncState === 'empty' ? '無資料' : '已同步' }}</span>
         <button class="button button-secondary" type="button" @click="void refresh()">重新同步</button>
@@ -374,7 +398,12 @@ onMounted(() => {
       </div>
     </header>
 
-    <div class="dashboard-layout">
+    <section v-if="currentRoute === '/pricing'" class="pricing-route" aria-labelledby="pricing-route-heading">
+      <div class="route-heading"><span class="eyebrow">PRICE GOVERNANCE</span><h1 id="pricing-route-heading">價格治理</h1><p>內建 USD 規則與本機覆寫採歷史有效區間；未知價格維持未知</p><button class="button button-secondary" type="button" @click="navigate('/dashboard')">返回 Dashboard</button></div>
+      <div class="table-scroll"><table><caption class="sr-only">Pricing entries</caption><thead><tr><th>Provider</th><th>Model</th><th>Mode</th><th>Token type</th><th>USD / MTok</th><th>Effective</th><th>Source</th></tr></thead><tbody><tr v-for="entry in data.pricing.entries" :key="`${entry.provider}-${entry.model}-${entry.mode}-${entry.tokenType}-${entry.effectiveFromUtc}`"><td>{{ entry.provider }}</td><td>{{ entry.model }}</td><td>{{ entry.mode }}</td><td>{{ entry.tokenType }}</td><td class="mono">{{ entry.usdPerMillionTokens.toFixed(2) }}</td><td class="mono">{{ entry.effectiveFromUtc || '—' }}{{ entry.effectiveToUtc ? ` → ${entry.effectiveToUtc}` : '' }}</td><td>{{ entry.isOverride ? '本機覆寫' : entry.sourceName }}</td></tr></tbody></table></div>
+    </section>
+
+    <div v-if="currentRoute === '/dashboard'" class="dashboard-layout">
       <aside id="control-rail" class="control-rail" :class="{ 'rail-open': controlRailOpen }" aria-label="控制與資料工具">
         <section class="rail-section" aria-labelledby="date-heading">
           <h2 id="date-heading" class="section-label">日期範圍</h2>
@@ -432,9 +461,9 @@ onMounted(() => {
         <template v-else>
           <section class="kpi-grid" aria-label="總覽指標">
             <article class="kpi-panel"><span class="eyebrow">TOTAL TOKENS</span><strong>{{ formatNumber(totalTokenCount) }}</strong><span class="kpi-meta">輸入、輸出與快取合計</span></article>
-            <article class="kpi-panel"><span class="eyebrow">EST. COST</span><strong>{{ formatUsd(totalCost) }}</strong><span class="kpi-meta">USD · price {{ data.pricing.version }}</span></article>
+            <article class="kpi-panel"><span class="eyebrow">EST. COST</span><strong>{{ formatUsd(totalCost) }}</strong><span class="kpi-meta">USD · price {{ data.pricing.version }}</span><span v-if="data.overview.costUsd === null" class="kpi-meta">已計價部分 {{ formatUsd(data.overview.partialCostUsd) }} · 覆蓋 {{ data.overview.costCoverage === null ? '未知' : `${Math.round(data.overview.costCoverage * 100)}%` }}</span></article>
             <article class="kpi-panel"><span class="eyebrow">SESSIONS</span><strong>{{ totalSessions }}</strong><span class="kpi-meta">overview 全域總覽 · {{ visibleSessions.length }} 筆載入</span></article>
-            <article class="kpi-panel"><span class="eyebrow">CACHE HIT</span><strong>{{ averageCache === null ? '未知' : `${Math.round(averageCache * 100)}%` }}</strong><span class="kpi-meta">僅以有快取事件計算</span></article>
+            <article class="kpi-panel"><span class="eyebrow">CACHE HIT</span><strong>{{ averageCache === null ? '未知' : `${Math.round(averageCache * 100)}%` }}</strong><span class="kpi-meta">覆蓋 {{ data.overview.cacheCoverage === null ? '未知' : `${Math.round(data.overview.cacheCoverage * 100)}%` }} · {{ data.overview.cacheUnreportedEventCount }} 筆未回報</span></article>
           </section>
 
           <div class="evidence-grid">

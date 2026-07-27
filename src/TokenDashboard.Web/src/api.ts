@@ -235,6 +235,10 @@ function normalizeSession(summary: JsonRecord, detail: JsonRecord | undefined): 
       return total
     }, {}),
     costUsd: nullableNumber(summary, 'costUsd', 'cost_usd') ?? nullableNumber(detailSession, 'costUsd', 'cost_usd'),
+    partialCostUsd: numberValue(summary, 'partialCostUsd', 'partial_cost_usd'),
+    pricedTokenCount: numberValue(summary, 'pricedTokenCount', 'priced_token_count'),
+    unpricedTokenCount: numberValue(summary, 'unpricedTokenCount', 'unpriced_token_count'),
+    costCoverage: nullableNumber(summary, 'costCoverage', 'cost_coverage'),
     tags: [],
     turns
   }
@@ -255,6 +259,13 @@ function normalizeOverview(row: JsonRecord): OverviewStat {
     outputTokens,
     cacheHitRate: nullableNumber(row, 'cacheHitRate', 'cache_hit_rate'),
     costUsd: nullableNumber(row, 'costUsd', 'cost_usd'),
+    partialCostUsd: numberValue(row, 'partialCostUsd', 'partial_cost_usd'),
+    pricedTokenCount: numberValue(row, 'pricedTokenCount', 'priced_token_count'),
+    unpricedTokenCount: numberValue(row, 'unpricedTokenCount', 'unpriced_token_count'),
+    costCoverage: nullableNumber(row, 'costCoverage', 'cost_coverage'),
+    cacheReportedEventCount: numberValue(row, 'cacheReportedEventCount', 'cache_reported_event_count'),
+    cacheUnreportedEventCount: numberValue(row, 'cacheUnreportedEventCount', 'cache_unreported_event_count'),
+    cacheCoverage: nullableNumber(row, 'cacheCoverage', 'cache_coverage'),
     unpriced: Boolean(row.unpriced),
     unpricedCount: numberValue(row, 'unpricedCount', 'unpriced_count'),
     tokenCounts: Object.keys(tokenCountsFromRecord(row)).length ? tokenCountsFromRecord(row) : { input: inputTokens, 'cached-input': cachedInputTokens, output: outputTokens }

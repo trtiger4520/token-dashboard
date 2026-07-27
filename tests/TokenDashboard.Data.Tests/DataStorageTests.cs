@@ -8,6 +8,18 @@ namespace TokenDashboard.Data.Tests;
 public sealed class DataStorageTests
 {
     [Fact]
+    public void LatestSchemaIncludesCacheAndPriceGovernanceColumns()
+    {
+        using var connection = OpenConnection();
+        Assert.Equal(SchemaMigrator.CurrentVersion, Scalar<long>(connection, "SELECT MAX(version) FROM schema_versions;"));
+        Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('sub_events') WHERE name = 'cache_metrics_reported';"));
+        Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'override_version';"));
+        Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'created_at_utc';"));
+        Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'catalog_version';"));
+        Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'source_kind';"));
+    }
+
+    [Fact]
     public void SchemaMigratorIsReentrantAndCreatesVersionedSchema()
     {
         using var connection = OpenConnection();
@@ -391,13 +403,17 @@ public sealed class DataStorageTests
         SchemaMigrator.Migrate(connection);
 
         Assert.Equal(SchemaMigrator.CurrentVersion, Scalar<long>(connection, "SELECT MAX(version) FROM schema_versions;"));
-        Assert.Equal(4L, Scalar<long>(connection, "SELECT COUNT(*) FROM schema_versions;"));
+        Assert.Equal(5L, Scalar<long>(connection, "SELECT COUNT(*) FROM schema_versions;"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'provider';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'mode';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'minimum_input_tokens';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'maximum_input_tokens';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'source_name';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'source_url';"));
+        Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'override_version';"));
+        Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'created_at_utc';"));
+        Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'catalog_version';"));
+        Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'source_kind';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'ix_price_versions_provider_model_mode_threshold_interval';"));
         Assert.Equal(0L, Scalar<long>(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'ix_price_versions_model_interval';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'project_tags';"));

@@ -4,7 +4,7 @@ namespace TokenDashboard.Data;
 
 public sealed class SchemaMigrator
 {
-    public const int CurrentVersion = 4;
+    public const int CurrentVersion = 5;
 
     public static void Migrate(SqliteConnection connection)
     {
@@ -31,7 +31,7 @@ public sealed class SchemaMigrator
         if (version == 0)
         {
             ApplyLatestSchema(transaction);
-            Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) VALUES (4, $appliedAtUtc);", ("$appliedAtUtc", UtcNow()));
+            Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) VALUES (5, $appliedAtUtc);", ("$appliedAtUtc", UtcNow()));
         }
         else
         {
@@ -53,6 +53,12 @@ public sealed class SchemaMigrator
             {
                 ApplyVersionFour(transaction);
                 Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) VALUES (4, $appliedAtUtc);", ("$appliedAtUtc", UtcNow()));
+            }
+
+            if (version < 5)
+            {
+                ApplyVersionFive(transaction);
+                Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) VALUES (5, $appliedAtUtc);", ("$appliedAtUtc", UtcNow()));
             }
         }
 
@@ -122,6 +128,7 @@ public sealed class SchemaMigrator
                 tool TEXT NOT NULL DEFAULT '',
                 subagent TEXT NOT NULL DEFAULT '',
                 workflow TEXT NOT NULL DEFAULT '',
+                cache_metrics_reported INTEGER NOT NULL DEFAULT 0 CHECK (cache_metrics_reported IN (0, 1)),
                 event_fingerprint TEXT NOT NULL UNIQUE,
                 FOREIGN KEY (source_id) REFERENCES sources (source_id) ON DELETE CASCADE,
                 FOREIGN KEY (session_id) REFERENCES sessions (session_id) ON DELETE CASCADE,
@@ -188,6 +195,10 @@ public sealed class SchemaMigrator
                 effective_to_utc TEXT,
                 source_name TEXT NOT NULL DEFAULT '',
                 source_url TEXT NOT NULL DEFAULT '',
+                override_version INTEGER NOT NULL DEFAULT 1,
+                created_at_utc TEXT NOT NULL DEFAULT '',
+                catalog_version TEXT NOT NULL DEFAULT '',
+                source_kind TEXT NOT NULL DEFAULT 'local-override',
                 CHECK (maximum_input_tokens IS NULL OR maximum_input_tokens > minimum_input_tokens),
                 CHECK (effective_to_utc IS NULL OR effective_to_utc > effective_from_utc)
             );
@@ -276,11 +287,29 @@ public sealed class SchemaMigrator
         AddColumnIfMissing(transaction, "source_url", "TEXT NOT NULL DEFAULT ''");
     }
 
+    private static void ApplyVersionFive(SqliteTransaction transaction)
+    {
+        if (TableExists(transaction, "sub_events"))
+        {
+            AddColumnIfMissing(transaction, "sub_events", "cache_metrics_reported", "INTEGER NOT NULL DEFAULT 0 CHECK (cache_metrics_reported IN (0, 1))");
+            Execute(transaction, "UPDATE sub_events SET cache_metrics_reported = CASE WHEN lower(payload) LIKE '%cache%' THEN 1 ELSE 0 END WHERE cache_metrics_reported = 0;");
+        }
+        AddColumnIfMissing(transaction, "price_versions", "override_version", "INTEGER NOT NULL DEFAULT 1");
+        AddColumnIfMissing(transaction, "price_versions", "created_at_utc", "TEXT NOT NULL DEFAULT ''");
+        AddColumnIfMissing(transaction, "price_versions", "catalog_version", "TEXT NOT NULL DEFAULT ''");
+        AddColumnIfMissing(transaction, "price_versions", "source_kind", "TEXT NOT NULL DEFAULT 'local-override'");
+        Execute(transaction, "UPDATE price_versions SET override_version = 1 WHERE override_version IS NULL OR override_version < 1;");
+        Execute(transaction, "UPDATE price_versions SET created_at_utc = effective_from_utc WHERE created_at_utc = '';");
+    }
+
     private static void AddColumnIfMissing(SqliteTransaction transaction, string columnName, string definition)
+        => AddColumnIfMissing(transaction, "price_versions", columnName, definition);
+
+    private static void AddColumnIfMissing(SqliteTransaction transaction, string tableName, string columnName, string definition)
     {
         using var command = transaction.Connection!.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "PRAGMA table_info(price_versions);";
+        command.CommandText = $"PRAGMA table_info({tableName});";
         var exists = false;
         using (var reader = command.ExecuteReader())
         {
@@ -299,7 +328,16 @@ public sealed class SchemaMigrator
             return;
         }
 
-        Execute(transaction, $"ALTER TABLE price_versions ADD COLUMN {columnName} {definition};");
+        Execute(transaction, $"ALTER TABLE {tableName} ADD COLUMN {columnName} {definition};");
+    }
+
+    private static bool TableExists(SqliteTransaction transaction, string tableName)
+    {
+        using var command = transaction.Connection!.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $tableName LIMIT 1;";
+        command.Parameters.AddWithValue("$tableName", tableName);
+        return command.ExecuteScalar() is not null;
     }
 
     private static int ReadVersion(SqliteTransaction transaction)

@@ -41,11 +41,15 @@ public sealed record PricingEntryDto(
     string? EffectiveTo,
     string SourceName,
     string SourceUrl,
-    bool IsOverride);
+    bool IsOverride,
+    int OverrideVersion = 1,
+    string CreatedAtUtc = "",
+    string CatalogVersion = "",
+    string SourceKind = "");
 
 public sealed record ExportRequest(
     string Format,
-    bool IncludeContent = true,
+    bool IncludeContent = false,
     string? Preset = null,
     string? From = null,
     string? To = null,
@@ -79,7 +83,8 @@ public sealed record EventRow(
     string Workflow,
     string Payload,
     IReadOnlyDictionary<string, long> Tokens,
-    string? Mode = null)
+    string? Mode = null,
+    bool? CacheMetricsReported = null)
 {
     public long InputTokens => Tokens.Where(static pair => TokenTypeNormalizer.IsCacheableInput(pair.Key)).Sum(static pair => pair.Value);
 
@@ -101,6 +106,12 @@ public sealed record EventRow(
             return total == 0 ? null : (decimal)CachedInputTokens / total;
         }
     }
+
+    // Providers differ in whether cache counters are emitted.  Keep this fact
+    // separate from a zero hit rate so the UI can show coverage honestly
+    public bool CacheReported => CacheMetricsReported ?? Tokens.Keys.Any(static key =>
+        TokenTypeNormalizer.IsCacheRead(key)
+        || TokenTypeNormalizer.Normalize(key).Contains("cache", StringComparison.Ordinal));
 }
 
 public static class TokenTypeNormalizer

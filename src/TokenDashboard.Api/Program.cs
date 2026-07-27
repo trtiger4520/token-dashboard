@@ -69,7 +69,10 @@ public static class ProgramEntry
         app.MapGet("/api/heatmap", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Heatmap(Range(request), Filter(request))));
         app.MapGet("/api/comparisons", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Comparisons(Range(request), request.Query["groupBy"].ToString(), Filter(request))));
         app.MapGet("/api/sessions", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Sessions(Range(request), Filter(request))));
-        app.MapGet("/api/sessions/{sessionId}", (string sessionId, DashboardReadService dashboard) => dashboard.Session(sessionId) is { } session ? Results.Ok(session) : Results.NotFound());
+        app.MapGet("/api/sessions/{sessionId}", (HttpRequest request, string sessionId, DashboardReadService dashboard) =>
+            dashboard.Session(sessionId, string.Equals(request.Query["reveal"], "true", StringComparison.OrdinalIgnoreCase) || string.Equals(request.Query["includeContent"], "true", StringComparison.OrdinalIgnoreCase) || string.Equals(request.Query["showContent"], "true", StringComparison.OrdinalIgnoreCase)) is { } session
+                ? Results.Ok(session)
+                : Results.NotFound());
 
         app.MapGet("/api/search", (HttpRequest request, DashboardReadService dashboard) =>
         {

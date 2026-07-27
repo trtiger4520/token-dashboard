@@ -27,14 +27,40 @@ public sealed class HistoricalPricingService
     public void Add(PriceVersion version)
     {
         ArgumentNullException.ThrowIfNull(version);
+        using var transaction = connection.BeginTransaction();
+        using var close = connection.CreateCommand();
+        close.Transaction = transaction;
+        close.CommandText = """
+            UPDATE price_versions
+            SET effective_to_utc = $effectiveFromUtc
+            WHERE provider = $provider
+              AND model = $model
+              AND mode = $mode
+              AND token_type = $tokenType
+              AND minimum_input_tokens = $minimumInputTokens
+              AND (maximum_input_tokens IS $maximumInputTokens OR maximum_input_tokens = $maximumInputTokens)
+              AND effective_from_utc < $effectiveFromUtc
+              AND (effective_to_utc IS NULL OR effective_to_utc > $effectiveFromUtc);
+            """;
+        close.Parameters.AddWithValue("$provider", version.Provider);
+        close.Parameters.AddWithValue("$model", version.Model);
+        close.Parameters.AddWithValue("$mode", version.Mode);
+        close.Parameters.AddWithValue("$tokenType", version.TokenType.Value);
+        close.Parameters.AddWithValue("$minimumInputTokens", version.MinimumInputTokens);
+        close.Parameters.AddWithValue("$maximumInputTokens", version.MaximumInputTokens is null ? DBNull.Value : version.MaximumInputTokens.Value);
+        close.Parameters.AddWithValue("$effectiveFromUtc", Utc(version.EffectiveFromUtc));
+        close.ExecuteNonQuery();
+
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO price_versions
                 (price_version_id, provider, model, mode, token_type, minimum_input_tokens, maximum_input_tokens,
-                 currency, usd_per_token, effective_from_utc, effective_to_utc)
+                 currency, usd_per_token, effective_from_utc, effective_to_utc,
+                 override_version, created_at_utc, catalog_version, source_kind)
             VALUES
                 ($priceVersionId, $provider, $model, $mode, $tokenType, $minimumInputTokens, $maximumInputTokens,
-                 'USD', $usdPerToken, $effectiveFromUtc, $effectiveToUtc);
+                 'USD', $usdPerToken, $effectiveFromUtc, $effectiveToUtc, 1, $createdAtUtc, '', 'local-override');
             """;
         command.Parameters.AddWithValue("$priceVersionId", StableId(version));
         command.Parameters.AddWithValue("$provider", version.Provider);
@@ -46,7 +72,9 @@ public sealed class HistoricalPricingService
         command.Parameters.AddWithValue("$usdPerToken", version.UsdPerToken.ToString(CultureInfo.InvariantCulture));
         command.Parameters.AddWithValue("$effectiveFromUtc", Utc(version.EffectiveFromUtc));
         command.Parameters.AddWithValue("$effectiveToUtc", version.EffectiveToUtc is null ? DBNull.Value : Utc(version.EffectiveToUtc.Value));
+        command.Parameters.AddWithValue("$createdAtUtc", Utc(DateTimeOffset.UtcNow));
         command.ExecuteNonQuery();
+        transaction.Commit();
     }
 
     public PriceQuote Calculate(

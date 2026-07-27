@@ -238,9 +238,15 @@ public sealed class ApiIntegrationTests
 
         var json = await client.PostAsJsonAsync("/api/export", new ExportRequest("json"));
         var jsonBody = await json.Content.ReadAsStringAsync();
-        Assert.Contains("private prompt", jsonBody);
-        Assert.Contains("sensitive", jsonBody);
-        Assert.True(json.Headers.Contains("X-Token-Dashboard-Export-Warning"));
+        Assert.DoesNotContain("private prompt", jsonBody);
+        Assert.DoesNotContain("sensitive", jsonBody);
+        Assert.False(json.Headers.Contains("X-Token-Dashboard-Export-Warning"));
+
+        var jsonWithContent = await client.PostAsJsonAsync("/api/export", new ExportRequest("json", IncludeContent: true));
+        var jsonWithContentBody = await jsonWithContent.Content.ReadAsStringAsync();
+        Assert.Contains("private prompt", jsonWithContentBody);
+        Assert.Contains("sensitive", jsonWithContentBody);
+        Assert.True(jsonWithContent.Headers.Contains("X-Token-Dashboard-Export-Warning"));
 
         var sqlite = await client.PostAsJsonAsync("/api/export", new ExportRequest("sqlite"));
         Assert.True(sqlite.Headers.Contains("X-Token-Dashboard-Export-Warning"));
@@ -277,6 +283,7 @@ public sealed class ApiIntegrationTests
         var overview = await client.GetFromJsonAsync<JsonElement>("/api/overview?from=2026-07-03&to=2026-07-04");
         Assert.True(overview.GetProperty("unpriced").GetBoolean());
         Assert.Equal(1, overview.GetProperty("unpricedCount").GetInt32());
+        Assert.Equal(0m, overview.GetProperty("partialCostUsd").GetDecimal());
     }
 
     [Fact]
@@ -307,6 +314,7 @@ public sealed class ApiIntegrationTests
         Assert.Equal(10, detail.GetProperty("turns")[0].GetProperty("tokens").GetProperty("input").GetInt64());
         Assert.Equal(5, detail.GetProperty("turns")[0].GetProperty("tokens").GetProperty("output").GetInt64());
         Assert.Equal(overview.GetProperty("costUsd").GetDecimal(), detail.GetProperty("costUsd").GetDecimal());
+        Assert.Equal(detail.GetProperty("turns")[0].GetProperty("partialCostUsd").GetDecimal(), detail.GetProperty("partialCostUsd").GetDecimal());
         Assert.Equal(overview.GetProperty("costUsd").GetDecimal(), detail.GetProperty("turns")[0].GetProperty("costUsd").GetDecimal());
     }
 

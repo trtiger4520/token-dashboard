@@ -171,10 +171,10 @@ public sealed class ImportService
         Execute(transaction, """
             INSERT INTO sub_events
                 (sub_event_id, source_id, session_id, turn_id, event_type, occurred_at_utc, source_timezone, payload,
-                 prompt, response, model, tool, subagent, workflow, event_fingerprint)
+                 prompt, response, model, tool, subagent, workflow, event_fingerprint, cache_metrics_reported)
             VALUES
                 ($subEventId, $sourceId, $sessionId, $turnId, $eventType, $occurredAtUtc, $sourceTimezone, $payload,
-                 $prompt, $response, $model, $tool, $subagent, $workflow, $fingerprint);
+                 $prompt, $response, $model, $tool, $subagent, $workflow, $fingerprint, $cacheMetricsReported);
             """,
             ("$subEventId", item.EventFingerprint.Value),
             ("$sourceId", item.SourceId),
@@ -190,6 +190,7 @@ public sealed class ImportService
             ("$tool", item.Tool),
             ("$subagent", item.Subagent),
             ("$workflow", item.Workflow),
+            ("$cacheMetricsReported", item.CacheMetricsReported ? 1 : 0),
             ("$fingerprint", item.EventFingerprint.Value));
     }
 

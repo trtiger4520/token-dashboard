@@ -21,7 +21,7 @@ public sealed class DashboardReadService
             """
             SELECT se.event_fingerprint, se.source_id, s.adapter_kind, se.session_id, se.turn_id,
                    se.occurred_at_utc, se.source_timezone, se.event_type, se.prompt, se.response,
-                   se.model, se.tool, se.subagent, se.workflow, se.payload
+                   se.model, se.tool, se.subagent, se.workflow, se.payload, se.cache_metrics_reported
             FROM sub_events AS se
             INNER JOIN sources AS s ON s.source_id = se.source_id
             WHERE se.occurred_at_utc >= $fromUtc AND se.occurred_at_utc < $toUtc
@@ -61,7 +61,8 @@ public sealed class DashboardReadService
             NullableString(row, "turn_id") is { } turnId && byTurn.TryGetValue(turnId, out var counts)
                 ? counts
                 : new Dictionary<string, long>(StringComparer.Ordinal),
-            ModeFromPayload(String(row, "payload")))).ToArray();
+            ModeFromPayload(String(row, "payload")),
+            row["cache_metrics_reported"] is null ? null : Convert.ToInt32(row["cache_metrics_reported"], CultureInfo.InvariantCulture) != 0)).ToArray();
 
         return ApplyFilter(events, filter).ToArray();
     }
@@ -70,6 +71,7 @@ public sealed class DashboardReadService
     {
         var events = StatisticalEvents(range, filter);
         var tokens = AggregateTokens(events.SelectMany(item => item.Tokens));
+        var coverage = CostCoverage(events);
         return new
         {
             range.FromUtc,
@@ -84,7 +86,14 @@ public sealed class DashboardReadService
             cachedInputTokens = events.Sum(item => item.CachedInputTokens),
             outputTokens = events.Sum(item => item.OutputTokens),
             cacheHitRate = CacheRate(events),
+            cacheReportedEventCount = events.Count(static item => item.CacheReported),
+            cacheUnreportedEventCount = events.Count(static item => !item.CacheReported),
+            cacheCoverage = events.Length == 0 ? (decimal?)null : (decimal)events.Count(static item => item.CacheReported) / events.Length,
             costUsd = Cost(events),
+            partialCostUsd = PartialCost(events),
+            pricedTokenCount = coverage.PricedTokens,
+            unpricedTokenCount = coverage.UnpricedTokens,
+            costCoverage = coverage.TotalTokens == 0 ? (decimal?)null : (decimal)coverage.PricedTokens / coverage.TotalTokens,
             unpriced = events.Any(item => Cost(item) is null && item.Tokens.Values.Any(static value => value > 0)),
             unpricedCount = events.Count(item => Cost(item) is null && item.Tokens.Values.Any(static value => value > 0))
         };
@@ -132,6 +141,7 @@ public sealed class DashboardReadService
                 bySession.TryGetValue(id, out var sessionEvents);
                 sessionEvents ??= [];
                 var tokens = AggregateTokens(sessionEvents.SelectMany(item => item.Tokens));
+                var coverage = CostCoverage(sessionEvents);
                 return (object)new
                 {
                     id,
@@ -146,12 +156,16 @@ public sealed class DashboardReadService
                     totalTokens = tokens.Values.Sum(),
                     tokens,
                     tokenTypes = tokens,
-                    costUsd = Cost(sessionEvents)
+                    costUsd = Cost(sessionEvents),
+                    partialCostUsd = PartialCost(sessionEvents),
+                    pricedTokenCount = coverage.PricedTokens,
+                    unpricedTokenCount = coverage.UnpricedTokens,
+                    costCoverage = coverage.TotalTokens == 0 ? (decimal?)null : (decimal)coverage.PricedTokens / coverage.TotalTokens
                 };
             }).ToArray();
     }
 
-    public object? Session(string id)
+    public object? Session(string id, bool revealContent = false)
     {
         var session = data.Query("SELECT * FROM sessions WHERE session_id = $id;", ("$id", id)).SingleOrDefault();
         if (session is null)
@@ -171,8 +185,27 @@ public sealed class DashboardReadService
             var turnEvents = allEvents.Where(item => string.Equals(item.TurnId, turnId, StringComparison.Ordinal)).ToArray();
             var turnAccountingEvents = UniqueTurnEvents(turnEvents);
             var tokens = AggregateTokens(turnAccountingEvents.SelectMany(item => item.Tokens));
-            var contents = data.Query("SELECT role, body, occurred_at_utc, source_timezone FROM contents WHERE turn_id = $id ORDER BY occurred_at_utc;", ("$id", turnId));
-            var subEvents = data.Query("SELECT * FROM sub_events WHERE turn_id = $id ORDER BY occurred_at_utc;", ("$id", turnId));
+            var coverage = CostCoverage(turnAccountingEvents);
+            var contents = data.Query("SELECT role, body, occurred_at_utc, source_timezone FROM contents WHERE turn_id = $id ORDER BY occurred_at_utc;", ("$id", turnId))
+                .Select(content => revealContent
+                    ? content
+                    : new Dictionary<string, object?>(content, StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["body"] = MaskContent(Convert.ToString(content["body"], CultureInfo.InvariantCulture) ?? string.Empty),
+                        ["contentMasked"] = true
+                    })
+                .ToArray();
+            var subEvents = data.Query("SELECT * FROM sub_events WHERE turn_id = $id ORDER BY occurred_at_utc;", ("$id", turnId))
+                .Select(subEvent => revealContent
+                    ? subEvent
+                    : new Dictionary<string, object?>(subEvent, StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["prompt"] = MaskContent(Convert.ToString(subEvent["prompt"], CultureInfo.InvariantCulture) ?? string.Empty),
+                        ["response"] = MaskContent(Convert.ToString(subEvent["response"], CultureInfo.InvariantCulture) ?? string.Empty),
+                        ["payload"] = MaskContent(Convert.ToString(subEvent["payload"], CultureInfo.InvariantCulture) ?? string.Empty),
+                        ["contentMasked"] = true
+                    })
+                .ToArray();
             var tokenUsage = tokens.Select(pair => new { tokenType = pair.Key, tokenCount = pair.Value }).ToArray();
             return (object)new
             {
@@ -184,10 +217,15 @@ public sealed class DashboardReadService
                 tokenUsage,
                 tokens,
                 tokenTypes = tokens,
-                costUsd = Cost(turnAccountingEvents)
+                costUsd = Cost(turnAccountingEvents),
+                partialCostUsd = PartialCost(turnAccountingEvents),
+                pricedTokenCount = coverage.PricedTokens,
+                unpricedTokenCount = coverage.UnpricedTokens,
+                costCoverage = coverage.TotalTokens == 0 ? (decimal?)null : (decimal)coverage.PricedTokens / coverage.TotalTokens
             };
         }).ToArray();
         var sessionTokens = AggregateTokens(accountingEvents.SelectMany(item => item.Tokens));
+        var sessionCoverage = CostCoverage(accountingEvents);
         return new
         {
             session,
@@ -196,8 +234,19 @@ public sealed class DashboardReadService
             totalTokens = sessionTokens.Values.Sum(),
             tokens = sessionTokens,
             tokenTypes = sessionTokens,
-            costUsd = Cost(accountingEvents)
+            costUsd = Cost(accountingEvents),
+            partialCostUsd = PartialCost(accountingEvents),
+            pricedTokenCount = sessionCoverage.PricedTokens,
+            unpricedTokenCount = sessionCoverage.UnpricedTokens,
+            costCoverage = sessionCoverage.TotalTokens == 0 ? (decimal?)null : (decimal)sessionCoverage.PricedTokens / sessionCoverage.TotalTokens
         };
+    }
+
+    private static string MaskContent(string body)
+    {
+        var lines = body.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        var visible = lines.Take(5).Select(static line => line.Length <= 12 ? new string('•', line.Length) : line[..4] + "…" + line[^4..]);
+        return string.Join('\n', visible);
     }
 
     public IReadOnlyList<SearchResult> Search(string query, int page, int pageSize, string? sourceId)
@@ -247,6 +296,7 @@ public sealed class DashboardReadService
     {
         var array = events.ToArray();
         var tokens = AggregateTokens(array.SelectMany(item => item.Tokens));
+        var coverage = CostCoverage(array);
         return new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             [label] = key,
@@ -258,8 +308,45 @@ public sealed class DashboardReadService
             ["cachedInputTokens"] = array.Sum(item => item.CachedInputTokens),
             ["outputTokens"] = array.Sum(item => item.OutputTokens),
             ["cacheHitRate"] = CacheRate(array),
-            ["costUsd"] = Cost(array)
+            ["cacheReportedEventCount"] = array.Count(static item => item.CacheReported),
+            ["cacheUnreportedEventCount"] = array.Count(static item => !item.CacheReported),
+            ["cacheCoverage"] = array.Length == 0 ? (decimal?)null : (decimal)array.Count(static item => item.CacheReported) / array.Length,
+            ["costUsd"] = Cost(array),
+            ["partialCostUsd"] = PartialCost(array),
+            ["pricedTokenCount"] = coverage.PricedTokens,
+            ["unpricedTokenCount"] = coverage.UnpricedTokens,
+            ["costCoverage"] = coverage.TotalTokens == 0 ? (decimal?)null : (decimal)coverage.PricedTokens / coverage.TotalTokens
         };
+    }
+
+    private CostCoverageResult CostCoverage(IEnumerable<EventRow> events)
+    {
+        var priced = 0L;
+        var unpriced = 0L;
+        foreach (var item in events)
+        {
+            var provider = ProviderFor(item);
+            var totalInput = item.InputTokens + item.CacheReadTokens;
+            foreach (var pair in item.Tokens)
+            {
+                if (pair.Value <= 0)
+                {
+                    continue;
+                }
+
+                var price = pricing.Resolve(provider, item.Model, pair.Key, item.OccurredAtUtc, totalInput, item.Mode);
+                if (price is null)
+                {
+                    unpriced = checked(unpriced + pair.Value);
+                }
+                else
+                {
+                    priced = checked(priced + pair.Value);
+                }
+            }
+        }
+
+        return new CostCoverageResult(priced, unpriced);
     }
 
     private decimal? Cost(IEnumerable<EventRow> events)
@@ -279,9 +366,34 @@ public sealed class DashboardReadService
         return total;
     }
 
+    private decimal PartialCost(IEnumerable<EventRow> events)
+    {
+        var total = 0m;
+        foreach (var item in events)
+        {
+            var provider = ProviderFor(item);
+            var totalInput = item.InputTokens + item.CacheReadTokens;
+            foreach (var pair in item.Tokens)
+            {
+                if (pair.Value <= 0)
+                {
+                    continue;
+                }
+
+                var price = pricing.Resolve(provider, item.Model, pair.Key, item.OccurredAtUtc, totalInput, item.Mode);
+                if (price is not null)
+                {
+                    total += pair.Value * price.UsdPerMillionTokens / 1_000_000m;
+                }
+            }
+        }
+
+        return total;
+    }
+
     private decimal? Cost(EventRow item)
     {
-        var provider = item.AdapterKind.Contains("Claude", StringComparison.OrdinalIgnoreCase) ? "anthropic" : item.AdapterKind.Contains("Codex", StringComparison.OrdinalIgnoreCase) ? "openai" : "unknown";
+        var provider = ProviderFor(item);
         var totalInput = item.InputTokens + item.CacheReadTokens;
         var total = 0m;
         foreach (var pair in item.Tokens)
@@ -296,6 +408,13 @@ public sealed class DashboardReadService
         }
 
         return total;
+    }
+
+    private static string ProviderFor(EventRow item) => item.AdapterKind.Contains("Claude", StringComparison.OrdinalIgnoreCase) ? "anthropic" : item.AdapterKind.Contains("Codex", StringComparison.OrdinalIgnoreCase) ? "openai" : "unknown";
+
+    private readonly record struct CostCoverageResult(long PricedTokens, long UnpricedTokens)
+    {
+        public long TotalTokens => checked(PricedTokens + UnpricedTokens);
     }
 
     private static decimal? CacheRate(IEnumerable<EventRow> events)

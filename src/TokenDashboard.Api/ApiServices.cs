@@ -869,7 +869,8 @@ public sealed class PricingService
             false));
         var overrides = data.Query("""
             SELECT provider, model, mode, token_type, minimum_input_tokens, maximum_input_tokens,
-                   usd_per_token, effective_from_utc, effective_to_utc, source_name, source_url
+                   usd_per_token, effective_from_utc, effective_to_utc, source_name, source_url,
+                   override_version, created_at_utc, catalog_version, source_kind
             FROM price_versions
             ORDER BY effective_from_utc DESC;
             """).Select(static row => new PricingEntryDto(
@@ -884,7 +885,11 @@ public sealed class PricingService
             row["effective_to_utc"] is null ? null : String(row, "effective_to_utc"),
             string.IsNullOrWhiteSpace(String(row, "source_name")) ? "User override" : String(row, "source_name"),
             String(row, "source_url"),
-            true));
+            true,
+            row["override_version"] is null ? 1 : Convert.ToInt32(row["override_version"], CultureInfo.InvariantCulture),
+            String(row, "created_at_utc"),
+            String(row, "catalog_version"),
+            string.IsNullOrWhiteSpace(String(row, "source_kind")) ? "local-override" : String(row, "source_kind")));
         return builtIn.Concat(overrides).ToArray();
     }
 

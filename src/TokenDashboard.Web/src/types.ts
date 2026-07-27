@@ -13,6 +13,13 @@ export interface OverviewStat {
   outputTokens: number
   cacheHitRate: number | null
   costUsd: number | null
+  partialCostUsd: number
+  pricedTokenCount: number
+  unpricedTokenCount: number
+  costCoverage: number | null
+  cacheReportedEventCount: number
+  cacheUnreportedEventCount: number
+  cacheCoverage: number | null
   unpriced: boolean
   unpricedCount: number
   tokenCounts: TokenBreakdown
@@ -68,6 +75,10 @@ export interface SessionRecord {
   endedAt: string
   tokens: TokenBreakdown
   costUsd: number | null
+  partialCostUsd?: number
+  pricedTokenCount?: number
+  unpricedTokenCount?: number
+  costCoverage?: number | null
   tags: string[]
   turns: TurnRecord[]
 }
@@ -181,6 +192,13 @@ export function createEmptyDashboardData(): DashboardData {
       outputTokens: 0,
       cacheHitRate: null,
       costUsd: null,
+      partialCostUsd: 0,
+      pricedTokenCount: 0,
+      unpricedTokenCount: 0,
+      costCoverage: null,
+      cacheReportedEventCount: 0,
+      cacheUnreportedEventCount: 0,
+      cacheCoverage: null,
       unpriced: false,
       unpricedCount: 0,
       tokenCounts: {}

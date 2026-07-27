@@ -131,6 +131,8 @@ public sealed record NormalizedEvent
 
     public IReadOnlyDictionary<TokenType, long> TokenCounts { get; }
 
+    public bool CacheMetricsReported => TokenCounts.Keys.Any(static token => token.Value.Contains("cache", StringComparison.OrdinalIgnoreCase));
+
     public IReadOnlyList<(string Key, string Value)> Tags { get; }
 
     public EventFingerprint EventFingerprint { get; }
