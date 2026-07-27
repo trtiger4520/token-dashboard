@@ -34,6 +34,8 @@ dotnet run --project src/TokenDashboard.Api/TokenDashboard.Api.csproj
 
 framework-dependent 產物需要目標平台預先安裝相容的 .NET 10 runtime
 
+使用 Docker Compose 時執行 `docker compose up --build`，直接開啟 `http://localhost:18080` 即可進入 Dashboard，Compose 會將 session key 放在 URL fragment 並由 SPA 讀取後移除；若有修改 `TOKEN_DASHBOARD_PORT`，請改用對應的 port
+
 ## 資料與啟動安全
 
 預設 SQLite 檔案是目前工作目錄的 `token-dashboard.db`，可用 `TokenDashboard__ConnectionString` 指定資料路徑

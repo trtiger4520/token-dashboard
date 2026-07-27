@@ -53,7 +53,10 @@ export function extractStartupKey(): string | null {
   const params = new URLSearchParams(window.location.hash.replace(/^#/, ''))
   const fragmentKey = params.get('key')
   if (fragmentKey) {
-    window.history.replaceState({}, document.title, `${window.location.pathname}${window.location.search}`)
+    const pathname = window.location.pathname.endsWith('/index.html')
+      ? window.location.pathname.slice(0, -'index.html'.length) || '/'
+      : window.location.pathname
+    window.history.replaceState({}, document.title, `${pathname}${window.location.search}`)
     window.sessionStorage.setItem('token-dashboard-key', fragmentKey)
     return fragmentKey
   }

@@ -24,6 +24,7 @@ services:
       TokenDashboard__BrowserPort: ${TOKEN_DASHBOARD_PORT:-18080}
       TokenDashboard__ConnectionString: Data Source=/data/token-dashboard.db
       TokenDashboard__EmitStartupDiagnostics: "true"
+      TokenDashboard__StartupEntryRedirect: "true"
       TokenDashboard__ListenPort: 5099
       TokenDashboard__OpenBrowser: "false"
     volumes:

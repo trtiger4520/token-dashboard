@@ -32,6 +32,37 @@ public sealed class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task StartupEntryRedirectProvidesFragmentSessionKeyWhenEnabled()
+    {
+        await using var app = ProgramEntry.BuildApplication([
+            "--TokenDashboard:ConnectionString=Data Source=:memory:;Mode=Memory;Cache=Shared",
+            "--TokenDashboard:OpenBrowser=false",
+            "--TokenDashboard:StartupEntryRedirect=true"
+        ]);
+        await app.StartAsync(TestContext.Current.CancellationToken);
+        try
+        {
+            var address = new Uri(Assert.Single(app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses));
+            using var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
+            {
+                BaseAddress = new Uri($"http://127.0.0.1:{address.Port}")
+            };
+            using var response = await client.GetAsync("/");
+            var location = response.Headers.Location?.ToString();
+
+            Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+            Assert.NotNull(location);
+            Assert.StartsWith("/index.html#key=", location, StringComparison.Ordinal);
+            Assert.DoesNotContain("?", location, StringComparison.Ordinal);
+            Assert.Contains(Uri.EscapeDataString(app.Services.GetRequiredService<SessionKeyService>().Key), location, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await app.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Fact]
     public async Task CorsAllowsOnlyTheActualLoopbackOrigin()
     {
         using var factory = new ApiFactory();

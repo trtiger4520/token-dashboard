@@ -27,6 +27,8 @@ public sealed class ApiOptions
 
     public bool EmitStartupDiagnostics { get; set; }
 
+    public bool StartupEntryRedirect { get; set; }
+
     public int ListenPort { get; set; }
 
     public string? SourceHome { get; set; }
@@ -83,6 +85,27 @@ public sealed class SessionKeyMiddleware
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             await context.Response.WriteAsJsonAsync(new { error = "A valid local session key is required" });
+            return;
+        }
+
+        await next(context);
+    }
+}
+
+public sealed class StartupEntryRedirectMiddleware
+{
+    private readonly RequestDelegate next;
+
+    public StartupEntryRedirectMiddleware(RequestDelegate next) => this.next = next;
+
+    public async Task InvokeAsync(HttpContext context, SessionKeyService sessionKey, IOptions<ApiOptions> options)
+    {
+        if (options.Value.StartupEntryRedirect &&
+            HttpMethods.IsGet(context.Request.Method) &&
+            context.Request.Path == "/")
+        {
+            var location = $"{context.Request.PathBase}/index.html#key={Uri.EscapeDataString(sessionKey.Key)}";
+            context.Response.Redirect(location, permanent: false);
             return;
         }
 

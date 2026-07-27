@@ -46,6 +46,7 @@ public static class ProgramEntry
         builder.Services.AddHostedService<SyncWorker>();
 
         var app = builder.Build();
+        app.UseMiddleware<StartupEntryRedirectMiddleware>();
         app.UseDefaultFiles();
         app.UseStaticFiles();
         app.UseMiddleware<LoopbackCorsMiddleware>();

@@ -29,6 +29,12 @@ export function resolveDateRange(preset: DatePreset, now = new Date()): DateRang
   return { startDate: isoDate(start), endDate: isoDate(end) }
 }
 
+export function resolveDayRange(offset = 0, now = new Date()): DateRange {
+  const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset)
+  const value = isoDate(day)
+  return { startDate: value, endDate: value }
+}
+
 export function isValidDateRange(range: DateRange): boolean {
   return range.startDate.length === 10 && range.endDate.length === 10 && range.startDate <= range.endDate
 }

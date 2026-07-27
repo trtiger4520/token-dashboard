@@ -8,7 +8,7 @@ FORM: Operate-mode three-column control rail / comparison matrix / inspector, in
 */
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { extractStartupKey, TokenDashboardClient, type SourceDiscoveryResult, type SyncRequest } from './api'
-import { isValidDateRange, resolveDateRange, type DatePreset } from './dateRange'
+import { isValidDateRange, resolveDateRange, resolveDayRange, type DatePreset } from './dateRange'
 import { createEmptyDashboardData, formatDateLabel, formatNumber, formatUsd, totalTokens, type DashboardData, type DashboardQuery, type EventKind, type SearchResult, type SessionRecord, type TagRecord, type TokenType } from './types'
 
 const client = new TokenDashboardClient()
@@ -84,6 +84,13 @@ function setTheme(dark: boolean): void {
 function applyPreset(preset: DatePreset): void {
   datePreset.value = preset
   if (preset !== 'custom') Object.assign(dateRange, resolveDateRange(preset))
+  void refresh()
+}
+
+function jumpToDay(offset: number): void {
+  const base = offset === 0 ? new Date() : new Date(`${dateRange.endDate}T00:00:00`)
+  Object.assign(dateRange, resolveDayRange(offset, base))
+  datePreset.value = 'custom'
   void refresh()
 }
 
@@ -369,21 +376,21 @@ onMounted(() => {
 
     <div class="dashboard-layout">
       <aside id="control-rail" class="control-rail" :class="{ 'rail-open': controlRailOpen }" aria-label="控制與資料工具">
-        <div class="rail-section rail-heading">
-          <span class="eyebrow">CONTROL RAIL</span>
-          <h1>Dashboard</h1>
-          <p>以時間、來源與模型固定比較範圍</p>
-        </div>
-
         <section class="rail-section" aria-labelledby="date-heading">
           <h2 id="date-heading" class="section-label">日期範圍</h2>
           <div class="preset-grid">
             <button v-for="preset in ([['30', '最近 30 天'], ['7', '最近 7 天'], ['90', '最近 90 天'], ['month', '本月'], ['last-month', '上月'], ['custom', '自訂']] as const)" :key="preset[0]" class="preset-button" :class="{ selected: datePreset === preset[0] }" type="button" @click="applyPreset(preset[0])">{{ preset[1] }}</button>
           </div>
+          <div class="date-shortcuts" aria-label="單日日期快捷操作">
+            <button class="button button-secondary" type="button" @click="jumpToDay(-1)">前一天</button>
+            <button class="button button-secondary" type="button" @click="jumpToDay(0)">今日</button>
+            <button class="button button-secondary" type="button" @click="jumpToDay(1)">後一天</button>
+          </div>
           <div class="date-fields">
             <label>開始日期<input v-model="dateRange.startDate" type="date" @change="datePreset = 'custom'" /></label>
             <label>結束日期<input v-model="dateRange.endDate" type="date" @change="datePreset = 'custom'" /></label>
           </div>
+          <button class="button button-primary button-full" type="button" aria-label="套用日期範圍" @click="void refresh()">套用範圍</button>
         </section>
 
         <section class="rail-section" aria-labelledby="filter-heading">
@@ -412,16 +419,13 @@ onMounted(() => {
         </section>
       </aside>
 
-      <main class="workspace" aria-labelledby="workspace-heading">
+      <main class="workspace" aria-label="Dashboard 工作區">
         <button id="control-toggle" class="mobile-control-toggle" type="button" aria-controls="control-rail" :aria-expanded="controlRailOpen" @click="controlRailOpen = !controlRailOpen"><span>篩選與資料工具</span><span class="mono">{{ controlRailOpen ? '收合' : '展開' }}</span></button>
         <div v-if="syncState === 'partial'" class="state-banner state-warning" role="status"><strong>部分同步</strong><span>{{ operationMessage || '來源同步只完成部分工作，請檢查來源狀態後重新同步' }}</span></div>
         <div v-if="syncState === 'error'" class="state-banner state-error" role="alert"><strong>讀取失敗</strong><span>{{ errorMessage }}</span><button class="button button-secondary" type="button" @click="void refresh()">重試</button></div>
         <div v-if="data.pricing.unknownCount > 0" class="state-banner state-info" role="status"><strong>未知價格 {{ data.pricing.unknownCount }} 筆</strong><span>找不到有效的歷史價格時保留未知，不以推估值替代</span><button class="button button-ghost" type="button" @click="inspectorTab = 'stats'">查看定價</button></div>
 
-        <div class="workspace-heading">
-          <div><span class="eyebrow">OVERVIEW / {{ data.pricing.version }}</span><h2 id="workspace-heading">效率比較矩陣</h2><p>{{ dateRange.startDate }} 至 {{ dateRange.endDate }} · 來源時區保留於事件層</p></div>
-          <div class="workspace-actions"><button class="button button-primary" type="button" @click="void refresh()">套用範圍</button><span class="mono generated-at">snapshot {{ data.generatedAt.replace('T', ' ').replace('Z', ' UTC') }}</span></div>
-        </div>
+        <div class="workspace-meta mono">snapshot {{ data.generatedAt.replace('T', ' ').replace('Z', ' UTC') }}</div>
 
         <div v-if="syncState === 'loading'" class="loading-grid" aria-label="正在載入 dashboard"><div v-for="index in 4" :key="index" class="skeleton"></div></div>
         <div v-else-if="syncState === 'empty'" class="empty-state"><span class="eyebrow">NO LOCAL EVENTS</span><h3>目前日期範圍沒有事件</h3><p>調整日期或來源篩選，或從左側匯入 JSON / CSV 來源</p><button class="button button-primary" type="button" @click="applyPreset('30')">回到最近 30 天</button></div>

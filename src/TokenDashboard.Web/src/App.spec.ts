@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import App from './App.vue'
 import { extractStartupKey, TokenDashboardClient } from './api'
-import { isValidDateRange, resolveDateRange } from './dateRange'
+import { isValidDateRange, resolveDateRange, resolveDayRange } from './dateRange'
 import { formatUsd, totalTokens } from './types'
 
 const fetchMock = vi.fn()
@@ -48,6 +48,8 @@ describe('date range and statistics helpers', () => {
   it('resolves inclusive recent ranges and month boundaries', () => {
     expect(resolveDateRange('7', new Date('2026-07-07T10:00:00Z'))).toEqual({ startDate: '2026-07-01', endDate: '2026-07-07' })
     expect(resolveDateRange('last-month', new Date('2026-07-07T10:00:00Z'))).toEqual({ startDate: '2026-06-01', endDate: '2026-06-30' })
+    expect(resolveDayRange(0, new Date('2026-07-07T10:00:00'))).toEqual({ startDate: '2026-07-07', endDate: '2026-07-07' })
+    expect(resolveDayRange(-1, new Date('2026-07-07T10:00:00'))).toEqual({ startDate: '2026-07-06', endDate: '2026-07-06' })
     expect(isValidDateRange({ startDate: '2026-07-08', endDate: '2026-07-07' })).toBe(false)
   })
 
@@ -63,6 +65,13 @@ describe('startup key boundary', () => {
     expect(extractStartupKey()).toBe('local-secret')
     expect(window.sessionStorage.getItem('token-dashboard-key')).toBe('local-secret')
     expect(window.location.pathname + window.location.search).toBe('/dashboard?tab=overview')
+    expect(window.location.hash).toBe('')
+  })
+
+  it('normalizes the startup entry back to the root path', () => {
+    window.history.replaceState({}, document.title, '/index.html#key=local-secret')
+    expect(extractStartupKey()).toBe('local-secret')
+    expect(window.location.pathname).toBe('/')
     expect(window.location.hash).toBe('')
   })
 
