@@ -83,6 +83,7 @@ internal static class ProviderLogParser
                 var tokens = ReadClaudeTokens(message);
                 var tool = toolNames.Length > 0 ? string.Join(", ", toolNames) : hasToolResult ? "tool-result" : "";
                 var model = GetString(message, "model") ?? "";
+                var effort = GetString(message, "reasoning_effort", "effort") ?? "";
                 var workflow = GetString(root, "entrypoint") ?? "";
                 var subagent = IsTrue(root, "isSidechain") ? "sidechain" : "";
                 var sourceId = GetString(root, "source_id", "source") ?? adapterKind.ToString();
@@ -96,7 +97,8 @@ internal static class ProviderLogParser
                     tool,
                     subagent,
                     workflow,
-                    tokens);
+                    tokens,
+                    effort);
 
                 events.Add(NormalizedEvent.Create(
                     adapterKind,
@@ -117,7 +119,8 @@ internal static class ProviderLogParser
                     canonicalPayload,
                     tokens,
                     [],
-                    line));
+                    line,
+                    effort: effort));
             }
             catch (JsonException exception)
             {
@@ -154,6 +157,7 @@ internal static class ProviderLogParser
         }
 
         var modelsByTurn = new Dictionary<string, string>(StringComparer.Ordinal);
+        var effortsByTurn = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var item in lines)
         {
             if (!string.Equals(GetString(item.Element, "type"), "turn_context", StringComparison.Ordinal) ||
@@ -164,9 +168,15 @@ internal static class ProviderLogParser
 
             var turnId = GetString(payload, "turn_id");
             var model = GetString(payload, "model");
+            var effort = GetString(payload, "reasoning_effort", "effort");
             if (!string.IsNullOrWhiteSpace(turnId) && !string.IsNullOrWhiteSpace(model))
             {
                 modelsByTurn[turnId] = model;
+            }
+
+            if (!string.IsNullOrWhiteSpace(turnId) && !string.IsNullOrWhiteSpace(effort))
+            {
+                effortsByTurn[turnId] = effort;
             }
         }
 
@@ -175,6 +185,7 @@ internal static class ProviderLogParser
         var toolNames = new Dictionary<string, string>(StringComparer.Ordinal);
         string? currentTurnId = null;
         var currentModel = "";
+        var currentEffort = "";
         var nextSequence = 0;
 
         foreach (var item in lines)
@@ -193,7 +204,13 @@ internal static class ProviderLogParser
                 var contextualTurnId = GetString(payload, "turn_id");
                 if (!string.IsNullOrWhiteSpace(contextualTurnId))
                 {
+                    var turnChanged = !string.Equals(currentTurnId, contextualTurnId, StringComparison.Ordinal);
                     currentTurnId = contextualTurnId;
+                    if (turnChanged)
+                    {
+                        currentModel = "";
+                        currentEffort = "";
+                    }
                     if (!turnSequences.ContainsKey(currentTurnId))
                     {
                         turnSequences[currentTurnId] = nextSequence++;
@@ -208,6 +225,20 @@ internal static class ProviderLogParser
                 else if (currentTurnId is not null && modelsByTurn.TryGetValue(currentTurnId, out var mappedModel))
                 {
                     currentModel = mappedModel;
+                }
+
+                var contextualEffort = GetString(payload, "reasoning_effort", "effort");
+                if (!string.IsNullOrWhiteSpace(contextualEffort))
+                {
+                    currentEffort = contextualEffort;
+                }
+                else if (currentTurnId is not null && effortsByTurn.TryGetValue(currentTurnId, out var mappedEffort))
+                {
+                    currentEffort = mappedEffort;
+                }
+                else
+                {
+                    currentEffort = "";
                 }
 
                 continue;
@@ -236,6 +267,9 @@ internal static class ProviderLogParser
             var model = modelsByTurn.TryGetValue(currentTurnId, out var mapped)
                 ? mapped
                 : currentModel;
+            var effort = effortsByTurn.TryGetValue(currentTurnId, out var mappedEffortForEvent)
+                ? mappedEffortForEvent
+                : currentEffort;
             var canonicalPayload = CanonicalPayload(
                 "codex",
                 parsed.EventType,
@@ -246,7 +280,8 @@ internal static class ProviderLogParser
                 parsed.Tool,
                 "",
                 "",
-                parsed.Tokens);
+                parsed.Tokens,
+                effort);
             events.Add(NormalizedEvent.Create(
                 adapterKind,
                 adapterKind.ToString(),
@@ -266,7 +301,8 @@ internal static class ProviderLogParser
                 canonicalPayload,
                 parsed.Tokens,
                 [],
-                item.RawText));
+                item.RawText,
+                effort: effort));
 
             if (payloadType is "function_call" or "custom_tool_call")
             {
@@ -539,7 +575,8 @@ internal static class ProviderLogParser
         string tool,
         string subagent,
         string workflow,
-        IReadOnlyDictionary<TokenType, long> tokens)
+        IReadOnlyDictionary<TokenType, long> tokens,
+        string effort = "")
     {
         return JsonSerializer.Serialize(new
         {
@@ -552,6 +589,7 @@ internal static class ProviderLogParser
             tool,
             subagent,
             workflow,
+            effort,
             tokens = tokens.ToDictionary(static pair => pair.Key.Value, static pair => pair.Value, StringComparer.Ordinal)
         });
     }

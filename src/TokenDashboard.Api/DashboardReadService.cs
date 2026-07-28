@@ -69,7 +69,7 @@ public sealed class DashboardReadService
 
     public IReadOnlyList<object> UnknownPricing(DateRange range, DashboardFilter? filter = null)
     {
-        var unknown = new Dictionary<string, (string Provider, string Model, string Mode, string TokenType, DateTimeOffset First, DateTimeOffset Last, long Count)>(StringComparer.OrdinalIgnoreCase);
+        var unknown = new Dictionary<string, (string Provider, string Model, string Mode, string TokenType, DateTimeOffset First, DateTimeOffset Last, long Count, long MaxInputTokens)>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in Events(range, filter))
         {
             var provider = ProviderFor(item);
@@ -85,25 +85,24 @@ public sealed class DashboardReadService
                 var key = $"{provider}|{item.Model}|{mode}|{TokenTypeNormalizer.Normalize(pair.Key)}";
                 if (unknown.TryGetValue(key, out var existing))
                 {
-                    unknown[key] = existing with { First = existing.First < item.OccurredAtUtc ? existing.First : item.OccurredAtUtc, Last = existing.Last > item.OccurredAtUtc ? existing.Last : item.OccurredAtUtc, Count = existing.Count + pair.Value };
+                    unknown[key] = existing with { First = existing.First < item.OccurredAtUtc ? existing.First : item.OccurredAtUtc, Last = existing.Last > item.OccurredAtUtc ? existing.Last : item.OccurredAtUtc, Count = existing.Count + pair.Value, MaxInputTokens = Math.Max(existing.MaxInputTokens, totalInput) };
                 }
                 else
                 {
-                    unknown[key] = (provider, item.Model, mode, TokenTypeNormalizer.Normalize(pair.Key), item.OccurredAtUtc, item.OccurredAtUtc, pair.Value);
+                    unknown[key] = (provider, item.Model, mode, TokenTypeNormalizer.Normalize(pair.Key), item.OccurredAtUtc, item.OccurredAtUtc, pair.Value, totalInput);
                 }
             }
         }
 
-        return unknown.Values.OrderBy(item => item.First).Select(item => (object)new
-        {
-            provider = item.Provider,
-            model = item.Model,
-            mode = item.Mode,
-            tokenType = item.TokenType,
-            earliestEventUtc = item.First,
-            latestEventUtc = item.Last,
-            tokenCount = item.Count
-        }).ToArray();
+        return unknown.Values.OrderBy(item => item.First).Select(item => new UnknownPricingDto(
+            item.Provider,
+            item.Model,
+            item.Mode,
+            item.TokenType,
+            item.First,
+            item.Last,
+            item.Count,
+            BuiltInPricingCatalog.Suggest(item.Provider, item.Model, item.TokenType, item.Mode, item.MaxInputTokens))).ToArray();
     }
 
     public object Overview(DateRange range, DashboardFilter? filter = null)
@@ -147,9 +146,62 @@ public sealed class DashboardReadService
 
     public IReadOnlyList<object> Heatmap(DateRange range, DashboardFilter? filter = null) => GroupByDate(StatisticalEvents(range, filter), range.TimeZoneId, static date => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
 
+    public bool TryTrend(DateRange range, string? interval, DashboardFilter? filter, out IReadOnlyList<object> points)
+    {
+        if (!TrendInterval.TryParse(interval, out var duration))
+        {
+            points = [];
+            return false;
+        }
+
+        var zone = DateRangeResolver.FindTimeZone(range.TimeZoneId);
+        var localFrom = TimeZoneInfo.ConvertTime(range.FromUtc, zone).DateTime.Date;
+        var localTo = TimeZoneInfo.ConvertTime(range.ToUtc, zone).DateTime;
+        var events = StatisticalEvents(range, filter);
+        var result = new List<object>();
+
+        for (var start = localFrom; start < localTo; start = start.Add(duration))
+        {
+            var end = start.Add(duration);
+            if (end > localTo)
+            {
+                end = localTo;
+            }
+
+            var startUtc = LocalToUtc(start, zone);
+            var endUtc = LocalToUtc(end, zone);
+            var bucket = events.Where(item => item.OccurredAtUtc >= startUtc && item.OccurredAtUtc < endUtc).ToArray();
+            var summary = BuildSummary("bucket", start.ToString("O", CultureInfo.InvariantCulture), bucket);
+            summary["bucketStartUtc"] = startUtc;
+            summary["bucketEndUtc"] = endUtc;
+            result.Add(summary);
+        }
+
+        points = result;
+        return true;
+    }
+
+    public IReadOnlyList<object> ComparisonTree(DateRange range, DashboardFilter? filter = null)
+    {
+        return StatisticalEvents(range, filter)
+            .GroupBy(item => string.IsNullOrWhiteSpace(item.Model) ? "模型未提供" : item.Model, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(group => group.Sum(item => item.TotalTokens))
+            .Select(group =>
+            {
+                var children = group
+                    .GroupBy(item => string.IsNullOrWhiteSpace(item.Tool) ? "非工具" : item.Tool, StringComparer.OrdinalIgnoreCase)
+                    .OrderByDescending(child => child.Sum(item => item.TotalTokens))
+                    .Select(child => ComparisonNode("tool", child.Key, child))
+                    .ToArray();
+                return ComparisonNode("model", group.Key, group, children);
+            })
+            .Cast<object>()
+            .ToArray();
+    }
+
     public IReadOnlyList<object> Comparisons(DateRange range, string? groupBy, DashboardFilter? filter = null)
     {
-        return StatisticalEvents(range, filter, groupBy)
+        return StatisticalEvents(range, filter)
             .GroupBy(item => groupBy?.ToLowerInvariant() switch
             {
                 "source" => item.SourceId,
@@ -256,6 +308,7 @@ public sealed class DashboardReadService
                 id = turnId,
                 sequence = Convert.ToInt32(turn["sequence"], CultureInfo.InvariantCulture),
                 occurredAtUtc = String(turn, "occurred_at_utc"),
+                effort = NullableString(turn, "effort"),
                 contents,
                 subEvents,
                 tokenUsage,
@@ -344,19 +397,58 @@ public sealed class DashboardReadService
             .ToArray();
     }
 
-    private EventRow[] StatisticalEvents(DateRange range, DashboardFilter? filter, string? groupBy = null)
+    private EventRow[] StatisticalEvents(DateRange range, DashboardFilter? filter)
     {
-        return UniqueTurnEvents(Events(range, filter), groupBy);
+        return UniqueTurnEvents(Events(range, filter));
     }
 
-    private static EventRow[] UniqueTurnEvents(IEnumerable<EventRow> events, string? groupBy = null)
+    private static EventRow[] UniqueTurnEvents(IEnumerable<EventRow> events)
     {
         return events
             .GroupBy(item => item.TurnId ?? item.Fingerprint, StringComparer.Ordinal)
-            .Select(group => string.Equals(groupBy, "tool", StringComparison.OrdinalIgnoreCase)
-                ? group.OrderByDescending(item => !string.IsNullOrWhiteSpace(item.Tool)).ThenBy(item => item.OccurredAtUtc).First()
-                : group.First())
+            .Select(group =>
+            {
+                var ordered = group.OrderBy(item => item.OccurredAtUtc).ThenBy(item => item.Fingerprint).ToArray();
+                var modelEvent = ordered.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.Model)) ?? ordered[0];
+                var tool = ordered.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.Tool))?.Tool ?? string.Empty;
+                return modelEvent with { Tool = tool };
+            })
             .ToArray();
+    }
+
+    private Dictionary<string, object?> ComparisonNode(string kind, string name, IEnumerable<EventRow> events, IReadOnlyList<object>? children = null)
+    {
+        var summary = BuildSummary("name", name, events);
+        summary["kind"] = kind;
+        if (children is not null)
+        {
+            summary["children"] = children;
+        }
+
+        return summary;
+    }
+
+    private static DateTimeOffset LocalToUtc(DateTime local, TimeZoneInfo zone)
+        => new(DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(local, DateTimeKind.Unspecified), zone), DateTimeKind.Utc));
+
+    private static class TrendInterval
+    {
+        private static readonly Dictionary<string, TimeSpan> Values = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["15m"] = TimeSpan.FromMinutes(15),
+            ["30m"] = TimeSpan.FromMinutes(30),
+            ["1h"] = TimeSpan.FromHours(1),
+            ["3h"] = TimeSpan.FromHours(3),
+            ["6h"] = TimeSpan.FromHours(6),
+            ["1d"] = TimeSpan.FromDays(1),
+            ["3d"] = TimeSpan.FromDays(3)
+        };
+
+        public static bool TryParse(string? value, out TimeSpan duration)
+        {
+            duration = default;
+            return value is not null && Values.TryGetValue(value, out duration);
+        }
     }
 
     private Dictionary<string, object?> Summary(string key, IEnumerable<EventRow> events)

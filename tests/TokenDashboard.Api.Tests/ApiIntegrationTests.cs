@@ -185,8 +185,10 @@ public sealed class ApiIntegrationTests
         foreach (var route in new[]
         {
             "/api/usage/daily?from=2026-07-08&to=2026-07-09",
+            "/api/usage/trend?from=2026-07-08&to=2026-07-09&interval=30m",
             "/api/usage/monthly?from=2026-07-08&to=2026-07-09",
             "/api/comparisons?from=2026-07-08&to=2026-07-09",
+            "/api/comparisons/tree?from=2026-07-08&to=2026-07-09",
             "/api/heatmap?from=2026-07-08&to=2026-07-09",
             "/api/sessions?from=2026-07-08&to=2026-07-09",
             "/api/sessions/endpoint-session"
@@ -194,6 +196,7 @@ public sealed class ApiIntegrationTests
         {
             Assert.Equal(HttpStatusCode.OK, (await client.GetAsync(route)).StatusCode);
         }
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/usage/trend?from=2026-07-08&to=2026-07-09&interval=bad")).StatusCode);
     }
 
     [Fact]
@@ -212,6 +215,13 @@ public sealed class ApiIntegrationTests
 
         var daily = await client.GetFromJsonAsync<JsonElement>("/api/usage/daily?from=2026-07-01&to=2026-07-03&timeZone=Asia/Taipei");
         Assert.Equal(2, daily.GetArrayLength());
+        var trend = await client.GetFromJsonAsync<JsonElement>("/api/usage/trend?from=2026-07-01&to=2026-07-03&timeZone=Asia/Taipei&interval=1h");
+        Assert.Equal(72, trend.GetArrayLength());
+        Assert.Contains(trend.EnumerateArray(), point => point.GetProperty("eventCount").GetInt32() == 0);
+        var tree = await client.GetFromJsonAsync<JsonElement>("/api/comparisons/tree?from=2026-07-01&to=2026-07-03&timeZone=Asia/Taipei");
+        Assert.Equal(1, tree.GetArrayLength());
+        Assert.Equal(72, tree[0].GetProperty("totalTokens").GetInt64());
+        Assert.Equal(72, tree[0].GetProperty("children").EnumerateArray().Sum(child => child.GetProperty("totalTokens").GetInt64()));
         var overview = await client.GetFromJsonAsync<JsonElement>("/api/overview?from=2026-07-01&to=2026-07-03&timeZone=Asia/Taipei");
         Assert.Equal(0.5m, overview.GetProperty("cacheHitRate").GetDecimal());
         var searchText = await client.GetStringAsync("/api/search?q=before%20boundary");
@@ -380,6 +390,29 @@ public sealed class ApiIntegrationTests
         var overview = await client.GetFromJsonAsync<JsonElement>("/api/overview?from=2026-07-05&to=2026-07-06");
         Assert.Equal(0.25m, overview.GetProperty("cacheHitRate").GetDecimal());
         Assert.Equal(25, overview.GetProperty("cachedInputTokens").GetInt64());
+    }
+
+    [Fact]
+    public async Task UnknownPricingSuggestsLatestCatalogPriceForReasoningAndLongContext()
+    {
+        using var factory = new ApiFactory();
+        using var client = factory.CreateAuthenticatedClient();
+        var content = """
+            {"timestamp":"2026-07-26T02:00:00Z","type":"session_meta","payload":{"id":"suggest-session","session_id":"suggest-session","timestamp":"2026-07-26T02:00:00Z","model_provider":"openai","source":"synthetic"}}
+            {"timestamp":"2026-07-26T02:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"suggest-turn","started_at":"2026-07-26T02:00:01Z"}}
+            {"timestamp":"2026-07-26T02:00:02Z","type":"turn_context","payload":{"turn_id":"suggest-turn","model":"gpt-5.6-sol"}}
+            {"timestamp":"2026-07-26T02:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300000,"output_tokens":100,"reasoning_output_tokens":20,"total_tokens":300100}}}}
+            """;
+
+        var response = await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", null, "suggest.jsonl", content));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var unknown = await client.GetFromJsonAsync<JsonElement>("/api/pricing/unknown?from=2026-07-26&to=2026-07-27");
+        var reasoning = unknown.EnumerateArray().Single(item => item.GetProperty("tokenType").GetString() == "reasoning");
+        var suggestion = reasoning.GetProperty("suggestion");
+        Assert.Equal("output", suggestion.GetProperty("catalogTokenType").GetString());
+        Assert.Equal("long-context-1m", suggestion.GetProperty("catalogMode").GetString());
+        Assert.Equal(60m, suggestion.GetProperty("usdPerMillionTokens").GetDecimal());
     }
 
     [Fact]

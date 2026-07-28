@@ -4,7 +4,7 @@ import { nextTick } from 'vue'
 import App from './App.vue'
 import { extractStartupKey, TokenDashboardClient } from './api'
 import { isValidDateRange, resolveDateRange, resolveDayRange } from './dateRange'
-import { formatUsd, totalTokens } from './types'
+import { formatTokenCount, formatUsd, totalTokens } from './types'
 
 const fetchMock = vi.fn()
 
@@ -20,14 +20,15 @@ function dashboardFetch(input: RequestInfo | URL, init?: RequestInit): Response 
   if (url.includes('/api/tags?')) return jsonResponse([{ id: 'tag-1', key: 'review', value: 'keep', scope: 'session', entityId: 's1' }])
   if (url.endsWith('/api/sources/import') && init?.method === 'POST') return jsonResponse({ status: 'completed' })
   if (url.includes('/api/overview')) return jsonResponse({ fromUtc: '2026-07-01T00:00:00Z', toUtc: '2026-07-08T00:00:00Z', timeZoneId: 'Asia/Taipei', eventCount: 1, sessionCount: 9, inputTokens: 3, cachedInputTokens: 2, outputTokens: 4, reasoningTokens: 5, fastTokens: 6, tokens: { input: 3, 'cached-input': 2, output: 4, reasoning: 5, fast: 6 }, cacheHitRate: 0.4, costUsd: 0.02, unpriced: true, unpricedCount: 7 })
-  if (url.includes('/api/usage/daily')) return jsonResponse([{ date: '2026-07-01', eventCount: 1, inputTokens: 3, cachedInputTokens: 2, outputTokens: 4, cacheHitRate: 0.4, costUsd: 0.02 }])
+  if (url.includes('/api/usage/trend')) return jsonResponse([{ bucketStartUtc: '2026-07-01T00:00:00Z', bucketEndUtc: '2026-07-01T01:00:00Z', date: '2026-07-01', eventCount: 1, inputTokens: 3, cachedInputTokens: 2, outputTokens: 4, cacheHitRate: 0.4, costUsd: 0.02 }])
   if (url.includes('/api/usage/monthly')) return jsonResponse([{ date: '2026-07', eventCount: 1, inputTokens: 3, cachedInputTokens: 2, outputTokens: 4, cacheHitRate: 0.4, costUsd: 0.02 }])
-  if (url.includes('/api/comparisons') && url.includes('groupBy=tool')) return jsonResponse([{ tool: 'rg', eventCount: 2, inputTokens: 3, reasoningTokens: 5, outputTokens: 4, cacheHitRate: 0.4, costUsd: 0.02 }])
+  if (url.includes('/api/comparisons/tree')) return jsonResponse([{ kind: 'model', name: 'gpt-5-codex', tokens: 12, eventCount: 1, uniqueSessionCount: 1, turnCount: 1, averageTokens: 12, costUsd: 0.02, children: [{ kind: 'tool', name: 'rg', tokens: 12, eventCount: 1, uniqueSessionCount: 1, turnCount: 1, averageTokens: 12, costUsd: 0.02, children: [] }] }])
   if (url.includes('/api/comparisons')) return jsonResponse([{ key: 'gpt-5-codex', eventCount: 1, inputTokens: 3, reasoningTokens: 5, outputTokens: 4, cacheHitRate: 0.4, costUsd: 0.02 }])
   if (url.includes('/api/heatmap')) return jsonResponse([{ date: '2026-07-01', eventCount: 1, inputTokens: 3, cachedInputTokens: 2, outputTokens: 4, cacheHitRate: 0.4, costUsd: 0.02 }])
   if (url.includes('/api/sessions/s1')) return jsonResponse({ session: { session_id: 's1', source_id: 'codex-cli', started_at_utc: '2026-07-01T00:00:00Z', last_activity_at_utc: '2026-07-01T00:05:00Z', cost_usd: 0.12 }, turns: [{ id: 't1', sequence: 1, contents: [], subEvents: [{ event_fingerprint: 'e1', event_type: 'tool', occurred_at_utc: '2026-07-01T00:01:00Z', model: 'gpt-5-codex', tool: 'rg', payload: 'search' }], tokenUsage: [{ token_type: 'input', token_count: 3 }, { token_type: 'output', token_count: 4 }, { token_type: 'reasoning', token_count: 5 }, { token_type: 'fast', token_count: 6 }] }] })
   if (url.includes('/api/sessions')) return jsonResponse([{ id: 's1', sourceId: 'codex-cli', startedAtUtc: '2026-07-01T00:00:00Z', lastActivityAtUtc: '2026-07-01T00:05:00Z', endedAtUtc: '2026-07-01T00:35:00Z', costUsd: 0.12 }])
   if (url.includes('/api/sources/capabilities')) return jsonResponse([{ adapterKind: 'CodexCli', status: 'Available', formats: ['json'], notes: 'ready' }])
+  if (url.includes('/api/pricing/unknown')) return jsonResponse([])
   if (url.includes('/api/pricing')) return jsonResponse({ catalogVersion: '2026-07-26', entries: [{ provider: 'openai', model: 'gpt-5-codex', tokenType: 'input', usdPerMillionTokens: 1, effectiveFrom: '2026-07-01', effectiveTo: '2026-08-01', isOverride: true }] })
   if (url.includes('/api/search')) return jsonResponse({ results: [{ itemId: 'e1', sourceId: 'codex-cli', sessionId: 's1', turnId: 't1', rank: 0.5 }] })
   return jsonResponse({}, 404)
@@ -56,6 +57,9 @@ describe('date range and statistics helpers', () => {
   it('formats token details and keeps unknown prices explicit', () => {
     expect(totalTokens({ input: 10, output: 20, cacheRead: 5, cacheWrite: 2 })).toBe(37)
     expect(formatUsd(null)).toBe('未知價格')
+    expect(formatTokenCount(999)).toBe('999')
+    expect(formatTokenCount(240300)).toBe('240.3k')
+    expect(formatTokenCount(12800000)).toBe('12.8m')
   })
 })
 
@@ -87,9 +91,9 @@ describe('formal API client contract', () => {
     const data = await client.getDashboard({ preset: '7d', from: '2026-07-01', to: '2026-07-07', timeZone: 'Asia/Taipei' })
     expect(data.overview.eventCount).toBe(1)
     expect(data.sessions[0]?.turns[0]?.tokens).toEqual({ input: 3, output: 4, reasoning: 5, fast: 6 })
-    expect(data.comparisons[0]?.name).toBe('gpt-5-codex')
-    expect(data.comparisons.find((row) => row.kind === 'tool')?.name).toBe('rg')
-    expect(data.comparisons.find((row) => row.kind === 'tool')?.tokens).toBe(12)
+    expect(data.comparisonTree[0]?.name).toBe('gpt-5-codex')
+    expect(data.comparisonTree[0]?.children[0]?.name).toBe('rg')
+    expect(data.comparisonTree[0]?.children[0]?.tokens).toBe(12)
     expect(data.tokenTypes).toEqual(expect.arrayContaining(['reasoning', 'fast']))
     expect(data.overview.sessionCount).toBe(9)
     expect(data.sessions[0]?.costUsd).toBe(0.12)
@@ -101,13 +105,13 @@ describe('formal API client contract', () => {
     const urls = fetchMock.mock.calls.map(([input]) => String(input))
     expect(urls.some((url) => url.includes('/api/dashboard'))).toBe(false)
     expect(urls.some((url) => url.includes('/api/overview?preset=7d&from=2026-07-01&to=2026-07-07&timeZone=Asia%2FTaipei'))).toBe(true)
-    expect(fetchMock).toHaveBeenCalledTimes(11)
+    expect(fetchMock).toHaveBeenCalledTimes(10)
   })
 
   it('passes every dashboard filter to the formal aggregate routes', async () => {
     await new TokenDashboardClient().getDashboard({ preset: '7d', from: '2026-07-01', to: '2026-07-07', timeZone: 'UTC', sourceId: 'codex-cli', tool: 'rg', model: 'gpt-5-codex', tokenType: 'reasoning' })
     const urls = fetchMock.mock.calls.map(([input]) => String(input)).filter((url) => url.includes('/api/overview') || url.includes('/api/usage/') || url.includes('/api/comparisons') || url.includes('/api/heatmap') || url.includes('/api/sessions?') || url.includes('/api/sources/capabilities') || url.includes('/api/pricing?') || url.includes('/api/tags?'))
-    expect(urls.length).toBe(10)
+    expect(urls.length).toBe(9)
     for (const url of urls) {
       expect(url).toContain('sourceId=codex-cli')
       expect(url).not.toContain('source=codex-cli')
@@ -186,7 +190,8 @@ describe('dashboard API states and interaction surface', () => {
   it('renders formal data without partial fixture fallback', async () => {
     const wrapper = mount(App)
     await flushPromises()
-    expect(wrapper.text()).toContain('比較矩陣')
+    expect(wrapper.find('.comparison-panel .panel-header').exists()).toBe(false)
+    expect(wrapper.get('.comparison-panel').attributes('aria-label')).toBe('模型與工具 token 矩形樹狀圖')
     expect(wrapper.text()).toContain('Session s1')
     expect(wrapper.text()).not.toContain('fixture')
     expect(wrapper.text()).not.toContain('部分同步')

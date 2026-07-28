@@ -69,6 +69,7 @@ public sealed record NormalizedEvent
         string tool,
         string subagent,
         string workflow,
+        string effort,
         DateTimeOffset occurredAtUtc,
         string sourceTimeZone,
         string payload,
@@ -89,6 +90,7 @@ public sealed record NormalizedEvent
         Tool = tool;
         Subagent = subagent;
         Workflow = workflow;
+        Effort = effort;
         OccurredAtUtc = occurredAtUtc;
         SourceTimeZone = sourceTimeZone;
         Payload = payload;
@@ -123,6 +125,8 @@ public sealed record NormalizedEvent
 
     public string Workflow { get; }
 
+    public string Effort { get; }
+
     public DateTimeOffset OccurredAtUtc { get; }
 
     public string SourceTimeZone { get; }
@@ -156,7 +160,8 @@ public sealed record NormalizedEvent
         string payload,
         IReadOnlyDictionary<TokenType, long> tokenCounts,
         IReadOnlyList<(string Key, string Value)> tags,
-        string? fingerprintPayload = null)
+        string? fingerprintPayload = null,
+        string? effort = null)
     {
         var fingerprint = EventFingerprint.Create(
             sourceId,
@@ -181,6 +186,7 @@ public sealed record NormalizedEvent
             tool,
             subagent,
             workflow,
+            effort ?? string.Empty,
             occurredAtUtc,
             sourceTimeZone,
             payload,
@@ -518,6 +524,7 @@ internal static class SourceFileParser
         var body = Get(map, "content") ?? "";
         var prompt = Get(map, "prompt") ?? (string.Equals(role, "user", StringComparison.OrdinalIgnoreCase) ? body : "");
         var response = Get(map, "response") ?? (string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase) ? body : "");
+        var effort = Get(map, "reasoning_effort") ?? Get(map, "effort") ?? "";
         var tokens = ReadTokens(map, jsonValues);
         var tags = ReadTags(map, jsonValues);
         var canonicalPayload = JsonSerializer.Serialize(new
@@ -535,6 +542,7 @@ internal static class SourceFileParser
             tool = Get(map, "tool") ?? "",
             subagent = Get(map, "subagent") ?? "",
             workflow = Get(map, "workflow") ?? "",
+            effort,
             mode = Get(map, "mode"),
             occurredAtUtc = occurredAtUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
             sourceTimeZone,
@@ -560,7 +568,8 @@ internal static class SourceFileParser
             canonicalPayload,
             tokens,
             tags,
-            payload);
+            payload,
+            effort: effort);
         return (normalized, null);
     }
 

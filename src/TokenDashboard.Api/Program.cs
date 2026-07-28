@@ -65,9 +65,16 @@ public static class ProgramEntry
 
         app.MapGet("/api/overview", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Overview(Range(request), Filter(request))));
         app.MapGet("/api/usage/daily", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Daily(Range(request), Filter(request))));
+        app.MapGet("/api/usage/trend", (HttpRequest request, DashboardReadService dashboard) =>
+        {
+            return dashboard.TryTrend(Range(request), request.Query["interval"].ToString(), Filter(request), out var points)
+                ? Results.Ok(points)
+                : Results.BadRequest(new { error = "interval must be one of 15m, 30m, 1h, 3h, 6h, 1d or 3d" });
+        });
         app.MapGet("/api/usage/monthly", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Monthly(Range(request), Filter(request))));
         app.MapGet("/api/heatmap", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Heatmap(Range(request), Filter(request))));
         app.MapGet("/api/comparisons", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Comparisons(Range(request), request.Query["groupBy"].ToString(), Filter(request))));
+        app.MapGet("/api/comparisons/tree", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.ComparisonTree(Range(request), Filter(request))));
         app.MapGet("/api/sessions", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Sessions(Range(request), Filter(request))));
         app.MapGet("/api/sessions/{sessionId}", (HttpRequest request, string sessionId, DashboardReadService dashboard) =>
             dashboard.Session(sessionId, string.Equals(request.Query["reveal"], "true", StringComparison.OrdinalIgnoreCase) || string.Equals(request.Query["includeContent"], "true", StringComparison.OrdinalIgnoreCase) || string.Equals(request.Query["showContent"], "true", StringComparison.OrdinalIgnoreCase)) is { } session

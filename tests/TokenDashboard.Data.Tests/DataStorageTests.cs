@@ -13,6 +13,7 @@ public sealed class DataStorageTests
         using var connection = OpenConnection();
         Assert.Equal(SchemaMigrator.CurrentVersion, Scalar<long>(connection, "SELECT MAX(version) FROM schema_versions;"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('sub_events') WHERE name = 'cache_metrics_reported';"));
+        Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('turns') WHERE name = 'effort';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'override_version';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'created_at_utc';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'catalog_version';"));
@@ -187,6 +188,7 @@ public sealed class DataStorageTests
         Assert.All(result.Events, item => Assert.Equal("codex-provider-turn", item.TurnId));
         Assert.All(result.Events, item => Assert.Equal("gpt-5.4", item.Model));
         Assert.Equal("Synthetic Codex prompt", result.Events[0].Prompt);
+        Assert.All(result.Events, item => Assert.Equal("high", item.Effort));
         Assert.Equal("synthetic-shell", result.Events[1].Tool);
         Assert.Equal("Synthetic tool output", result.Events[2].Response);
 
@@ -218,6 +220,7 @@ public sealed class DataStorageTests
         Assert.Equal(4, codex.ImportedEventCount);
         Assert.Equal(2L, Scalar<long>(connection, "SELECT COUNT(*) FROM sessions;"));
         Assert.Equal(3L, Scalar<long>(connection, "SELECT COUNT(*) FROM turns;"));
+        Assert.Equal("high", Scalar<string>(connection, "SELECT effort FROM turns WHERE turn_id = 'codex-provider-turn';"));
         Assert.Equal(6L, Scalar<long>(connection, "SELECT COUNT(*) FROM sub_events;"));
         Assert.Equal(10L, Scalar<long>(connection, "SELECT COUNT(*) FROM token_usages;"));
         Assert.NotEmpty(FtsIndexingService.Search(connection, "provider prompt"));
@@ -403,7 +406,7 @@ public sealed class DataStorageTests
         SchemaMigrator.Migrate(connection);
 
         Assert.Equal(SchemaMigrator.CurrentVersion, Scalar<long>(connection, "SELECT MAX(version) FROM schema_versions;"));
-        Assert.Equal(5L, Scalar<long>(connection, "SELECT COUNT(*) FROM schema_versions;"));
+        Assert.Equal(6L, Scalar<long>(connection, "SELECT COUNT(*) FROM schema_versions;"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'provider';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'mode';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'minimum_input_tokens';"));

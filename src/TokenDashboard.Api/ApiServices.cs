@@ -736,6 +736,64 @@ public static class BuiltInPricingCatalog
 
     private sealed record AnthropicRate(string Model, decimal Input, decimal Output);
 
+    public static PricingSuggestionDto? Suggest(
+        string provider,
+        string model,
+        string tokenType,
+        string mode,
+        long totalInputTokens)
+    {
+        var normalizedProvider = provider.Trim();
+        var normalizedModel = model.Trim();
+        var normalizedTokenType = TokenTypeNormalizer.Normalize(tokenType);
+        var normalizedMode = string.IsNullOrWhiteSpace(mode) ? "standard" : mode.Trim();
+        var tokenCandidates = TokenTypeNormalizer.PricingVariants(normalizedTokenType).ToList();
+        if (normalizedTokenType == "reasoning") tokenCandidates.Add("output");
+
+        var candidates = Entries
+            .Where(entry => string.Equals(entry.Provider, normalizedProvider, StringComparison.OrdinalIgnoreCase))
+            .Where(entry => ModelsMatch(normalizedProvider, normalizedModel, entry.Model))
+            .Where(entry => tokenCandidates.Contains(TokenTypeNormalizer.Normalize(entry.TokenType), StringComparer.OrdinalIgnoreCase))
+            .Where(entry => string.Equals(entry.Mode, normalizedMode, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(normalizedMode, "standard", StringComparison.OrdinalIgnoreCase) && string.Equals(entry.Mode, "long-context-1m", StringComparison.OrdinalIgnoreCase))
+            .Where(entry => totalInputTokens >= entry.MinimumInputTokens && (entry.MaximumInputTokens is null || totalInputTokens < entry.MaximumInputTokens))
+            .OrderByDescending(entry => DateTimeOffset.Parse(entry.EffectiveDate, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal))
+            .ThenByDescending(entry => string.Equals(entry.Mode, normalizedMode, StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(entry => entry.MinimumInputTokens)
+            .ToArray();
+
+        var candidate = candidates.FirstOrDefault();
+        if (candidate is null) return null;
+
+        var reasons = new List<string>();
+        if (!string.Equals(candidate.Model, normalizedModel, StringComparison.OrdinalIgnoreCase)) reasons.Add($"模型 alias → {candidate.Model}");
+        if (!string.Equals(candidate.TokenType, normalizedTokenType, StringComparison.OrdinalIgnoreCase)) reasons.Add($"token type → {candidate.TokenType}");
+        if (!string.Equals(candidate.Mode, normalizedMode, StringComparison.OrdinalIgnoreCase)) reasons.Add($"模式 → {candidate.Mode}");
+        if (DateTimeOffset.Parse(candidate.EffectiveDate, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal) > DateTimeOffset.UtcNow) reasons.Add($"採用最新價格 {candidate.EffectiveDate}");
+        if (normalizedTokenType == "reasoning") reasons.Add("reasoning 以 output 價格估算");
+
+        return new PricingSuggestionDto(
+            candidate.Model,
+            candidate.Mode,
+            candidate.TokenType,
+            candidate.MinimumInputTokens,
+            candidate.MaximumInputTokens,
+            candidate.UsdPerMillionTokens,
+            candidate.EffectiveDate,
+            candidate.SourceName,
+            candidate.SourceUrl,
+            reasons.Count == 0 ? "使用官方最新價格" : string.Join("；", reasons));
+    }
+
+    private static bool ModelsMatch(string provider, string actual, string catalog)
+    {
+        if (string.Equals(actual, catalog, StringComparison.OrdinalIgnoreCase)) return true;
+        return string.Equals(provider, "anthropic", StringComparison.OrdinalIgnoreCase)
+            && CompactModelName(actual).Equals(CompactModelName(catalog), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string CompactModelName(string value) => TokenTypeNormalizer.Normalize(value).Replace("-", string.Empty).Replace(".", string.Empty);
+
     public static PriceCatalogEntry? Find(string provider, string model, string tokenType, DateTimeOffset atUtc, long totalInputTokens, string? mode = null)
     {
         return Entries.Where(item => string.Equals(item.Provider, provider, StringComparison.OrdinalIgnoreCase) &&

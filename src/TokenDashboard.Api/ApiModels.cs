@@ -31,6 +31,28 @@ public sealed record PriceWriteRequest(
 
 public sealed record PriceDeactivateRequest(string Provider, string Model, string TokenType, string? Mode = null);
 
+public sealed record PricingSuggestionDto(
+    string CatalogModel,
+    string CatalogMode,
+    string CatalogTokenType,
+    long MinimumInputTokens,
+    long? MaximumInputTokens,
+    decimal UsdPerMillionTokens,
+    string EffectiveFrom,
+    string SourceName,
+    string SourceUrl,
+    string Reason);
+
+public sealed record UnknownPricingDto(
+    string Provider,
+    string Model,
+    string Mode,
+    string TokenType,
+    DateTimeOffset EarliestEventUtc,
+    DateTimeOffset LatestEventUtc,
+    long TokenCount,
+    PricingSuggestionDto? Suggestion);
+
 public sealed record PricingEntryDto(
     string Provider,
     string Model,
@@ -139,6 +161,7 @@ public static class TokenTypeNormalizer
         return normalized switch
         {
             "cached-input" or "cache-read" => [normalized, "cached-input", "cache-read"],
+            "cache-write-input" or "cache-write" => [normalized, "cache-write-input", "cache-write"],
             "cacheable-input" => ["cacheable-input", "input"],
             _ => [normalized]
         };
