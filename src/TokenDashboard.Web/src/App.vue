@@ -10,7 +10,7 @@ import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { extractStartupKey, TokenDashboardClient, type SourceDiscoveryResult, type SyncRequest } from './api'
 import { isValidDateRange, resolveDateRange, resolveDayRange, type DatePreset } from './dateRange'
-import { createEmptyDashboardData, formatDateLabel, formatNumber, formatUsd, totalTokens, type DashboardData, type DashboardQuery, type EventKind, type SearchResult, type SessionRecord, type TagRecord, type TokenType, type UnknownPricing } from './types'
+import { createEmptyDashboardData, formatDateLabel, formatNumber, formatUsd, totalTokens, type DashboardData, type DashboardQuery, type EventKind, type PricingEntry, type SearchResult, type SessionRecord, type TagRecord, type TokenType, type UnknownPricing } from './types'
 
 const client = new TokenDashboardClient()
 const data = ref<DashboardData>(createEmptyDashboardData())
@@ -43,6 +43,10 @@ const pricingEffectiveFrom = ref('')
 const pricingEffectiveTo = ref('')
 const pricingMinimum = ref('0')
 const pricingMaximum = ref('')
+const pricingSearchTerm = ref('')
+const pricingProviderFilter = ref('all')
+const pricingModeFilter = ref('all')
+const pricingTokenTypeFilter = ref('all')
 const showDeleteConfirm = ref(false)
 const pendingExport = ref<'json' | 'sqlite' | null>(null)
 const deleteDialog = ref<HTMLDialogElement | null>(null)
@@ -79,6 +83,37 @@ const averageCache = computed(() => data.value.overview.cacheHitRate)
 const maxDailyTokens = computed(() => Math.max(...data.value.daily.map((day) => day.tokens), 1))
 const heatmapDays = computed(() => (data.value.heatmap.length ? data.value.heatmap : data.value.daily).map((day) => ({ ...day, intensity: Math.max(1, Math.ceil((day.tokens / maxDailyTokens.value) * 5)) })))
 const sourceStatus = computed(() => discoveredSources.value.length ? `已檢查 ${discoveredSources.value.length} 個 adapter` : data.value.sources.length ? `已載入 ${data.value.sources.length} 個來源` : '來源未提供')
+const officialPricingEntries = computed(() => data.value.pricing.entries.filter((entry) => !entry.isOverride))
+const overridePricingEntries = computed(() => data.value.pricing.entries.filter((entry) => entry.isOverride))
+const pricingModelCount = computed(() => new Set(officialPricingEntries.value.map((entry) => entry.model)).size)
+const pricingProviders = computed(() => [...new Set(officialPricingEntries.value.map((entry) => entry.provider))].sort())
+const pricingModes = computed(() => [...new Set(officialPricingEntries.value.map((entry) => entry.mode))].sort())
+const pricingTokenTypes = computed(() => [...new Set(officialPricingEntries.value.map((entry) => entry.tokenType))].sort())
+const visibleOfficialPricing = computed(() => {
+  const query = pricingSearchTerm.value.trim().toLowerCase()
+  return officialPricingEntries.value
+    .filter((entry) => pricingProviderFilter.value === 'all' || entry.provider === pricingProviderFilter.value)
+    .filter((entry) => pricingModeFilter.value === 'all' || entry.mode === pricingModeFilter.value)
+    .filter((entry) => pricingTokenTypeFilter.value === 'all' || entry.tokenType === pricingTokenTypeFilter.value)
+    .filter((entry) => !query || `${entry.provider} ${entry.model} ${entry.mode} ${entry.tokenType}`.toLowerCase().includes(query))
+    .sort((left, right) => `${left.provider}-${left.model}-${left.mode}-${left.tokenType}`.localeCompare(`${right.provider}-${right.model}-${right.mode}-${right.tokenType}`))
+})
+
+function pricingModeLabel(mode: string): string {
+  return ({ standard: 'Standard', batch: 'Batch', flex: 'Flex', priority: 'Priority', 'long-context-1m': 'Long context', 'batch-long-context-1m': 'Batch · long context' } as Record<string, string>)[mode] ?? mode
+}
+
+function pricingTokenLabel(tokenType: string): string {
+  return ({ input: 'Input', 'cached-input': 'Cached input', 'cache-write': 'Cache write', 'cache-write-5m': 'Cache write · 5m', 'cache-write-1h': 'Cache write · 1h', 'cache-read': 'Cache read', output: 'Output' } as Record<string, string>)[tokenType] ?? tokenType
+}
+
+function pricingLimitLabel(value: number | null): string {
+  return value === null ? '不限' : formatNumber(value)
+}
+
+function pricingSourceLabel(entry: PricingEntry): string {
+  return entry.sourceName || (entry.isOverride ? '本機覆寫' : '官方 catalog')
+}
 
 function navigate(route: '/dashboard' | '/pricing'): void {
   if (routerPush) void routerPush(route)
@@ -453,15 +488,33 @@ onMounted(() => {
     </header>
 
     <section v-if="currentRoute === '/pricing'" class="pricing-route" aria-labelledby="pricing-route-heading">
-      <div class="route-heading"><span class="eyebrow">PRICE GOVERNANCE</span><h1 id="pricing-route-heading">價格治理</h1><p>內建 USD 規則與本機覆寫採歷史有效區間；未知價格維持未知</p><button class="button button-secondary" type="button" @click="navigate('/dashboard')">返回 Dashboard</button></div>
-      <div class="pricing-coverage"><strong>Coverage</strong><span>{{ data.pricing.entries.length }} catalog entries · {{ data.pricing.overrideCount }} local overrides · {{ unknownPricing.length }} unknown combinations</span></div>
-      <div v-if="unknownPricing.length" class="pricing-unknown"><h2>未知價格組合</h2><p>以下組合未套用價格，成本維持未知</p><div class="table-scroll"><table><thead><tr><th>Provider</th><th>Model</th><th>Mode</th><th>Token type</th><th>首筆事件</th><th>Token 數</th><th></th></tr></thead><tbody><tr v-for="entry in unknownPricing" :key="`${entry.provider}-${entry.model}-${entry.mode}-${entry.tokenType}`"><td>{{ entry.provider }}</td><td>{{ entry.model }}</td><td>{{ entry.mode }}</td><td>{{ entry.tokenType }}</td><td class="mono">{{ entry.earliestEventUtc }}</td><td class="mono">{{ formatNumber(entry.tokenCount) }}</td><td><button class="button button-ghost" type="button" @click="prefillUnknown(entry)">建立 override</button></td></tr></tbody></table></div></div>
-      <section class="pricing-editor"><h2>建立 / 修訂本機覆寫</h2><div class="form-grid"><label>Provider<input v-model="pricingProvider" /></label><label>Model<input v-model="pricingModel" /></label><label>Token type<input v-model="pricingTokenType" /></label><label>Mode<input v-model="pricingMode" /></label><label>USD / MTok<input v-model="pricingAmount" inputmode="decimal" /></label><label>Effective from<input v-model="pricingEffectiveFrom" type="date" /></label><label>Effective to<input v-model="pricingEffectiveTo" type="date" /></label><label>Min input tokens<input v-model="pricingMinimum" inputmode="numeric" /></label><label>Max input tokens<input v-model="pricingMaximum" inputmode="numeric" /></label></div><button class="button button-primary" type="button" @click="void savePricing()">儲存 override</button></section>
-      <section><h2>Official catalog (read-only)</h2><div class="table-scroll"><table><caption class="sr-only">Official pricing entries</caption><tbody><tr v-for="entry in data.pricing.entries.filter((item) => !item.isOverride)" :key="`official-${entry.provider}-${entry.model}-${entry.mode}-${entry.tokenType}`"><td>{{ entry.provider }}</td><td>{{ entry.model }}</td><td>{{ entry.tokenType }}</td><td class="mono">{{ entry.usdPerMillionTokens.toFixed(2) }}</td><td>{{ entry.sourceName }} · {{ entry.sourceUrl }}</td><td>{{ entry.catalogVersion || data.pricing.version }}</td></tr></tbody></table></div></section>
-       <section><h2>Local override history</h2><div class="table-scroll"><table><thead><tr><th>Provider</th><th>Model</th><th>Token type</th><th>USD / MTok</th><th>有效區間</th><th>操作</th></tr></thead><tbody><tr v-for="entry in data.pricing.entries.filter((item) => item.isOverride)" :key="`override-${entry.provider}-${entry.model}-${entry.mode}-${entry.tokenType}-${entry.effectiveFromUtc}`"><td>{{ entry.provider }}</td><td>{{ entry.model }}</td><td>{{ entry.tokenType }}</td><td class="mono">{{ entry.usdPerMillionTokens.toFixed(2) }}</td><td>{{ entry.effectiveFromUtc }}{{ entry.effectiveToUtc ? ` → ${entry.effectiveToUtc}` : '' }}</td><td><button class="button button-ghost" type="button" @click="revisePricing(entry)">修訂</button><button v-if="!entry.effectiveToUtc" class="button button-ghost" type="button" @click="void deactivatePricing(entry.provider, entry.model, entry.tokenType, entry.mode)">停用</button></td></tr></tbody></table></div></section>
-    </section>
+      <div class="route-heading pricing-heading"><div><span class="eyebrow">PRICE GOVERNANCE / API CATALOG</span><h1 id="pricing-route-heading">價格治理</h1><p>用同一套歷史有效區間管理 OpenAI 與 Anthropic 的 API 成本規則，未知價格永遠保持未知</p></div><button class="button button-secondary" type="button" @click="navigate('/dashboard')">返回 Dashboard</button></div>
 
-    <section v-if="currentRoute === '/pricing'" class="pricing-revise-actions" aria-label="Pricing override actions"><h2 class="sr-only">Override actions</h2><button v-for="entry in data.pricing.entries.filter((item) => item.isOverride)" :key="`revise-${entry.provider}-${entry.model}-${entry.mode}-${entry.tokenType}-${entry.effectiveFromUtc}`" class="button button-ghost" type="button" @click="revisePricing(entry)">修訂 {{ entry.provider }}/{{ entry.model }}/{{ entry.tokenType }}</button></section>
+      <div class="pricing-summary" aria-label="價格 catalog 摘要">
+        <article><span class="eyebrow">MODELS</span><strong>{{ pricingModelCount }}</strong><span>官方模型</span></article>
+        <article><span class="eyebrow">RATE ROWS</span><strong>{{ officialPricingEntries.length }}</strong><span>輸入、快取與輸出規則</span></article>
+        <article><span class="eyebrow">OVERRIDES</span><strong>{{ data.pricing.overrideCount }}</strong><span>本機有效覆寫</span></article>
+        <article :class="{ 'summary-warning': unknownPricing.length > 0 }"><span class="eyebrow">UNKNOWN</span><strong>{{ unknownPricing.length }}</strong><span>尚未匹配價格的組合</span></article>
+      </div>
+
+      <section class="pricing-toolbar" aria-label="篩選官方價格">
+        <div class="pricing-toolbar-heading"><div><span class="eyebrow">OFFICIAL CATALOG</span><h2>官方價格清單</h2></div><span class="catalog-stamp mono">USD / MTok · {{ data.pricing.version || '—' }}</span></div>
+        <div class="pricing-filters">
+          <label class="pricing-search">搜尋模型或計費項目<input v-model="pricingSearchTerm" type="search" placeholder="例如 gpt-5.6、cache-read" /></label>
+          <label>Provider<select v-model="pricingProviderFilter"><option value="all">全部 provider</option><option v-for="provider in pricingProviders" :key="provider" :value="provider">{{ provider }}</option></select></label>
+          <label>Mode<select v-model="pricingModeFilter"><option value="all">全部模式</option><option v-for="mode in pricingModes" :key="mode" :value="mode">{{ pricingModeLabel(mode) }}</option></select></label>
+          <label>Token type<select v-model="pricingTokenTypeFilter"><option value="all">全部 token type</option><option v-for="tokenType in pricingTokenTypes" :key="tokenType" :value="tokenType">{{ pricingTokenLabel(tokenType) }}</option></select></label>
+        </div>
+        <p class="pricing-filter-result">顯示 {{ visibleOfficialPricing.length }} / {{ officialPricingEntries.length }} 筆 · 官方來源為唯讀，價格以生效日期與 input token 門檻判定</p>
+        <div class="table-scroll pricing-table-scroll"><table class="pricing-table"><caption class="sr-only">官方 API 價格清單</caption><thead><tr><th>Provider</th><th>Model</th><th>Mode</th><th>Token type</th><th>Input min</th><th>Input max</th><th>USD / MTok</th><th>Effective</th><th>Source</th></tr></thead><tbody><tr v-for="entry in visibleOfficialPricing" :key="`official-${entry.provider}-${entry.model}-${entry.mode}-${entry.tokenType}-${entry.effectiveFromUtc}`"><td><span class="provider-mark" :class="`provider-${entry.provider}`">{{ entry.provider === 'openai' ? 'O' : 'A' }}</span>{{ entry.provider }}</td><td class="mono model-cell">{{ entry.model }}</td><td><span class="mode-badge">{{ pricingModeLabel(entry.mode) }}</span></td><td>{{ pricingTokenLabel(entry.tokenType) }}</td><td class="mono">{{ formatNumber(entry.minimumInputTokens) }}</td><td class="mono">{{ pricingLimitLabel(entry.maximumInputTokens) }}</td><td class="mono price-cell">{{ entry.usdPerMillionTokens.toFixed(4) }}</td><td class="mono">{{ entry.effectiveFromUtc }}</td><td><a :href="entry.sourceUrl" target="_blank" rel="noreferrer">{{ pricingSourceLabel(entry) }} ↗</a></td></tr><tr v-if="visibleOfficialPricing.length === 0"><td colspan="9" class="table-empty">沒有符合條件的價格規則</td></tr></tbody></table></div>
+      </section>
+
+      <div v-if="unknownPricing.length" class="pricing-unknown"><div class="section-heading-row"><div><span class="eyebrow">UNPRICED COMBINATIONS</span><h2>未知價格組合</h2></div><span class="unknown mono">{{ unknownPricing.length }} 筆</span></div><p>以下組合未套用價格，成本維持未知；可從事件證據建立本機 override</p><div class="table-scroll"><table><thead><tr><th>Provider</th><th>Model</th><th>Mode</th><th>Token type</th><th>首筆事件</th><th>Token 數</th><th></th></tr></thead><tbody><tr v-for="entry in unknownPricing" :key="`${entry.provider}-${entry.model}-${entry.mode}-${entry.tokenType}`"><td>{{ entry.provider }}</td><td class="mono">{{ entry.model }}</td><td>{{ entry.mode }}</td><td>{{ entry.tokenType }}</td><td class="mono">{{ entry.earliestEventUtc }}</td><td class="mono">{{ formatNumber(entry.tokenCount) }}</td><td><button class="button button-ghost" type="button" @click="prefillUnknown(entry)">建立 override</button></td></tr></tbody></table></div></div>
+
+      <section class="pricing-editor"><div class="section-heading-row"><div><span class="eyebrow">LOCAL OVERRIDE</span><h2>建立或修訂本機覆寫</h2></div><span class="rail-note">半開有效區間 · 不改寫官方 catalog</span></div><div class="form-grid"><label>Provider<input v-model="pricingProvider" /></label><label>Model<input v-model="pricingModel" /></label><label>Token type<input v-model="pricingTokenType" /></label><label>Mode<input v-model="pricingMode" /></label><label>USD / MTok<input v-model="pricingAmount" inputmode="decimal" /></label><label>Effective from<input v-model="pricingEffectiveFrom" type="date" /></label><label>Effective to<input v-model="pricingEffectiveTo" type="date" /></label><label>Min input tokens<input v-model="pricingMinimum" inputmode="numeric" /></label><label>Max input tokens<input v-model="pricingMaximum" inputmode="numeric" placeholder="不限" /></label></div><button class="button button-primary" type="button" @click="void savePricing()">儲存 override</button></section>
+
+      <section class="pricing-overrides"><div class="section-heading-row"><div><span class="eyebrow">OVERRIDE HISTORY</span><h2>本機覆寫歷史</h2></div><span class="catalog-stamp">{{ overridePricingEntries.length }} 筆</span></div><div v-if="overridePricingEntries.length" class="table-scroll"><table><thead><tr><th>Provider</th><th>Model</th><th>Mode</th><th>Token type</th><th>USD / MTok</th><th>有效區間</th><th>操作</th></tr></thead><tbody><tr v-for="entry in overridePricingEntries" :key="`override-${entry.provider}-${entry.model}-${entry.mode}-${entry.tokenType}-${entry.effectiveFromUtc}`"><td>{{ entry.provider }}</td><td class="mono">{{ entry.model }}</td><td>{{ pricingModeLabel(entry.mode) }}</td><td>{{ pricingTokenLabel(entry.tokenType) }}</td><td class="mono">{{ entry.usdPerMillionTokens.toFixed(4) }}</td><td class="mono">{{ entry.effectiveFromUtc }}{{ entry.effectiveToUtc ? ` → ${entry.effectiveToUtc}` : ' → open' }}</td><td><button class="button button-ghost" type="button" @click="revisePricing(entry)">修訂</button><button v-if="!entry.effectiveToUtc" class="button button-ghost" type="button" @click="void deactivatePricing(entry.provider, entry.model, entry.tokenType, entry.mode)">停用</button></td></tr></tbody></table></div><p v-else class="table-empty override-empty">尚未建立本機覆寫</p></section>
+    </section>
 
     <div v-if="currentRoute === '/dashboard'" class="dashboard-layout">
       <aside id="control-rail" class="control-rail" :class="{ 'rail-open': controlRailOpen }" aria-label="控制與資料工具">

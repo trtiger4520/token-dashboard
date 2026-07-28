@@ -610,27 +610,131 @@ public sealed record PriceCatalogEntry(
 
 public static class BuiltInPricingCatalog
 {
-    public const string Version = "2026-07-26";
+    public const string Version = "2026-07-28";
 
-    private const string OpenAiUrl = "https://developers.openai.com/api/docs/models/gpt-5.4";
-    private const string AnthropicUrl = "https://docs.anthropic.com/en/docs/about-claude/pricing";
+    private const string OpenAiUrl = "https://developers.openai.com/api/docs/pricing";
+    private const string AnthropicUrl = "https://platform.claude.com/docs/en/about-claude/pricing";
 
     public static IReadOnlyList<PriceCatalogEntry> Entries { get; } =
     [
-        new("openai", "gpt-5.4", "standard", "input", 0, 272000, 2.50m, "OpenAI", OpenAiUrl, "2026-03-05"),
-        new("openai", "gpt-5.4", "standard", "cached-input", 0, 272000, 0.25m, "OpenAI", OpenAiUrl, "2026-03-05"),
-        new("openai", "gpt-5.4", "standard", "output", 0, 272000, 15m, "OpenAI", OpenAiUrl, "2026-03-05"),
-        new("openai", "gpt-5.4", "long-context-1m", "input", 272000, null, 5m, "OpenAI", OpenAiUrl, "2026-03-05"),
-        new("openai", "gpt-5.4", "long-context-1m", "cached-input", 272000, null, 0.25m, "OpenAI", OpenAiUrl, "2026-03-05"),
-        new("openai", "gpt-5.4", "long-context-1m", "output", 272000, null, 22.5m, "OpenAI", OpenAiUrl, "2026-03-05"),
-        new("anthropic", "claude-sonnet-4", "standard", "input", 0, 200000, 3m, "Anthropic", AnthropicUrl, "2025-05-22"),
-        new("anthropic", "claude-sonnet-4", "standard", "cache-write-5m", 0, 200000, 3.75m, "Anthropic", AnthropicUrl, "2025-05-22"),
-        new("anthropic", "claude-sonnet-4", "standard", "cache-write-1h", 0, 200000, 6m, "Anthropic", AnthropicUrl, "2025-05-22"),
-        new("anthropic", "claude-sonnet-4", "standard", "cache-read", 0, 200000, 0.30m, "Anthropic", AnthropicUrl, "2025-05-22"),
-        new("anthropic", "claude-sonnet-4", "standard", "output", 0, 200000, 15m, "Anthropic", AnthropicUrl, "2025-05-22"),
-        new("anthropic", "claude-sonnet-4", "long-context-1m", "input", 200000, null, 6m, "Anthropic", AnthropicUrl, "2025-05-22"),
-        new("anthropic", "claude-sonnet-4", "long-context-1m", "output", 200000, null, 22.5m, "Anthropic", AnthropicUrl, "2025-05-22")
+        ..OpenAiEntries(),
+        ..AnthropicEntries()
     ];
+
+    private static IEnumerable<PriceCatalogEntry> OpenAiEntries()
+    {
+        var models = new[]
+        {
+            new ModelRate("gpt-5.6-sol", 5m, 30m, 0.50m, 6.25m, 10m, 60m, 1m, 12.50m, 272000, 10m, 60m, 1m, 12.50m),
+            new ModelRate("gpt-5.6-terra", 2.50m, 15m, 0.25m, 3.125m, 5m, 30m, 0.50m, 6.25m, 272000, 5m, 30m, 0.50m, 6.25m),
+            new ModelRate("gpt-5.6-luna", 1m, 6m, 0.10m, 1.25m, 2m, 12m, 0.20m, 2.50m, 272000, 2m, 12m, 0.20m, 2.50m),
+            new ModelRate("gpt-5.5", 5m, 30m, 0.50m, null, 10m, 75m, 1.25m, null, 272000, 12.50m, 75m, 1.25m, null),
+            new ModelRate("gpt-5.5-pro", 30m, 180m, null, null, 60m, 270m, null, null, 272000),
+            new ModelRate("gpt-5.4", 2.50m, 15m, 0.25m, null, 5m, 22.50m, 0.50m, null, 272000, 5m, 30m, 0.50m, null),
+            new ModelRate("gpt-5.4-mini", 0.75m, 4.50m, 0.075m, null, null, null, null, null, 272000, 1.50m, 9m, 0.15m, null),
+            new ModelRate("gpt-5.4-nano", 0.20m, 1.25m, 0.02m, null, null, null, null, null, 272000),
+            new ModelRate("gpt-5.4-pro", 30m, 180m, null, null, 60m, 270m, null, null, 272000)
+        };
+
+        foreach (var model in models)
+        {
+            var effectiveDate = model.Model == "gpt-5.4" || model.Model == "gpt-5.4-mini" || model.Model == "gpt-5.4-nano" || model.Model == "gpt-5.4-pro"
+                ? "2026-03-05"
+                : model.Model == "gpt-5.5" || model.Model == "gpt-5.5-pro" ? "2026-04-23" : "2026-07-09";
+            foreach (var entry in ModelEntries("openai", model, effectiveDate, OpenAiUrl, 272000)) yield return entry;
+        }
+    }
+
+    private static IEnumerable<PriceCatalogEntry> AnthropicEntries()
+    {
+        var models = new[]
+        {
+            new AnthropicRate("claude-fable-5", 10m, 50m),
+            new AnthropicRate("claude-mythos-5", 10m, 50m),
+            new AnthropicRate("claude-opus-5", 5m, 25m),
+            new AnthropicRate("claude-opus-4.8", 5m, 25m),
+            new AnthropicRate("claude-opus-4.7", 5m, 25m),
+            new AnthropicRate("claude-opus-4.6", 5m, 25m),
+            new AnthropicRate("claude-opus-4.5", 5m, 25m),
+            new AnthropicRate("claude-sonnet-4.6", 3m, 15m),
+            new AnthropicRate("claude-sonnet-4.5", 3m, 15m),
+            new AnthropicRate("claude-haiku-4.5", 1m, 5m)
+        };
+
+        foreach (var model in models)
+        {
+            foreach (var entry in AnthropicModelEntries(model.Model, model.Input, model.Output, "2026-07-28")) yield return entry;
+        }
+
+        foreach (var entry in AnthropicModelEntries("claude-sonnet-5", 2m, 10m, "2026-07-28")) yield return entry;
+        foreach (var entry in AnthropicModelEntries("claude-sonnet-5", 3m, 15m, "2026-09-01")) yield return entry;
+
+        foreach (var entry in AnthropicModelEntries("claude-sonnet-4", 3m, 15m, "2025-05-22", 200000, includeBatch: false)) yield return entry;
+        foreach (var entry in AnthropicModelEntries("claude-opus-4.1", 15m, 75m, "2025-05-22", 200000, includeBatch: false)) yield return entry;
+        foreach (var entry in AnthropicModelEntries("claude-haiku-3.5", 0.80m, 4m, "2024-10-22", 200000, includeBatch: false)) yield return entry;
+    }
+
+    private static IEnumerable<PriceCatalogEntry> ModelEntries(string provider, ModelRate model, string effectiveDate, string sourceUrl, long longContextThreshold)
+    {
+        foreach (var entry in TokenEntries(provider, model.Model, "standard", model.Input, model.Output, model.CachedInput, model.CacheWrite, 0, model.StandardMaximum, effectiveDate, sourceUrl)) yield return entry;
+        foreach (var entry in TokenEntries(provider, model.Model, "batch", model.Input / 2, model.Output / 2, model.CachedInput / 2, model.CacheWrite / 2, 0, model.StandardMaximum, effectiveDate, sourceUrl)) yield return entry;
+        foreach (var entry in TokenEntries(provider, model.Model, "flex", model.Input / 2, model.Output / 2, model.CachedInput / 2, model.CacheWrite / 2, 0, model.StandardMaximum, effectiveDate, sourceUrl)) yield return entry;
+
+        if (model.LongInput is not null)
+        {
+            foreach (var entry in TokenEntries(provider, model.Model, "long-context-1m", model.LongInput.Value, model.LongOutput!.Value, model.LongCachedInput, model.LongCacheWrite, longContextThreshold, null, effectiveDate, sourceUrl)) yield return entry;
+            foreach (var entry in TokenEntries(provider, model.Model, "batch-long-context-1m", model.LongInput.Value / 2, model.LongOutput.Value / 2, model.LongCachedInput / 2, model.LongCacheWrite / 2, longContextThreshold, null, effectiveDate, sourceUrl)) yield return entry;
+        }
+
+        if (model.PriorityInput is not null)
+        {
+            foreach (var entry in TokenEntries(provider, model.Model, "priority", model.PriorityInput.Value, model.PriorityOutput!.Value, model.PriorityCachedInput, model.PriorityCacheWrite, 0, model.StandardMaximum, effectiveDate, sourceUrl)) yield return entry;
+        }
+    }
+
+    private static IEnumerable<PriceCatalogEntry> AnthropicModelEntries(string model, decimal input, decimal output, string effectiveDate, long? maximumInputTokens = null, bool includeBatch = true)
+    {
+        foreach (var entry in AnthropicTokenEntries(model, "standard", input, output, effectiveDate, maximumInputTokens)) yield return entry;
+        if (includeBatch)
+        {
+            foreach (var entry in AnthropicTokenEntries(model, "batch", input / 2, output / 2, effectiveDate, maximumInputTokens)) yield return entry;
+        }
+    }
+
+    private static IEnumerable<PriceCatalogEntry> AnthropicTokenEntries(string model, string mode, decimal input, decimal output, string effectiveDate, long? maximumInputTokens)
+    {
+        yield return new("anthropic", model, mode, "input", 0, maximumInputTokens, input, "Anthropic", AnthropicUrl, effectiveDate);
+        yield return new("anthropic", model, mode, "cache-write-5m", 0, maximumInputTokens, input * 1.25m, "Anthropic", AnthropicUrl, effectiveDate);
+        yield return new("anthropic", model, mode, "cache-write-1h", 0, maximumInputTokens, input * 2m, "Anthropic", AnthropicUrl, effectiveDate);
+        yield return new("anthropic", model, mode, "cache-read", 0, maximumInputTokens, input * 0.1m, "Anthropic", AnthropicUrl, effectiveDate);
+        yield return new("anthropic", model, mode, "output", 0, maximumInputTokens, output, "Anthropic", AnthropicUrl, effectiveDate);
+    }
+
+    private static IEnumerable<PriceCatalogEntry> TokenEntries(string provider, string model, string mode, decimal input, decimal output, decimal? cachedInput, decimal? cacheWrite, long minimumInputTokens, long? maximumInputTokens, string effectiveDate, string sourceUrl)
+    {
+        yield return new(provider, model, mode, "input", minimumInputTokens, maximumInputTokens, input, provider == "openai" ? "OpenAI" : "Anthropic", sourceUrl, effectiveDate);
+        if (cachedInput is not null) yield return new(provider, model, mode, "cached-input", minimumInputTokens, maximumInputTokens, cachedInput.Value, provider == "openai" ? "OpenAI" : "Anthropic", sourceUrl, effectiveDate);
+        if (cacheWrite is not null) yield return new(provider, model, mode, "cache-write", minimumInputTokens, maximumInputTokens, cacheWrite.Value, provider == "openai" ? "OpenAI" : "Anthropic", sourceUrl, effectiveDate);
+        yield return new(provider, model, mode, "output", minimumInputTokens, maximumInputTokens, output, provider == "openai" ? "OpenAI" : "Anthropic", sourceUrl, effectiveDate);
+    }
+
+    private sealed record ModelRate(
+        string Model,
+        decimal Input,
+        decimal Output,
+        decimal? CachedInput,
+        decimal? CacheWrite,
+        decimal? LongInput,
+        decimal? LongOutput,
+        decimal? LongCachedInput,
+        decimal? LongCacheWrite,
+        int StandardMaximum,
+        decimal? PriorityInput = null,
+        decimal? PriorityOutput = null,
+        decimal? PriorityCachedInput = null,
+        decimal? PriorityCacheWrite = null);
+
+    private sealed record AnthropicRate(string Model, decimal Input, decimal Output);
 
     public static PriceCatalogEntry? Find(string provider, string model, string tokenType, DateTimeOffset atUtc, long totalInputTokens, string? mode = null)
     {
