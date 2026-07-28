@@ -815,7 +815,7 @@ public sealed class DashboardDataService
         });
     }
 
-    public byte[] Backup()
+    public byte[] Backup(bool includeContent = false)
     {
         return store.Read(connection =>
         {
@@ -827,6 +827,15 @@ public sealed class DashboardDataService
                 {
                     destination.Open();
                     connection.BackupDatabase(destination);
+                    if (!includeContent)
+                    {
+                        using var scrub = destination.CreateCommand();
+                        scrub.CommandText = "UPDATE sub_events SET prompt = '', response = '', payload = ''; UPDATE contents SET body = ''; UPDATE search_index SET prompt = '', response = '';";
+                        scrub.ExecuteNonQuery();
+                        using var vacuum = destination.CreateCommand();
+                        vacuum.CommandText = "VACUUM;";
+                        vacuum.ExecuteNonQuery();
+                    }
                 }
 
                 bytes = File.ReadAllBytes(path);
@@ -866,7 +875,11 @@ public sealed class PricingService
             null,
             entry.SourceName,
             entry.SourceUrl,
-            false));
+            false,
+            1,
+            entry.EffectiveDate,
+            BuiltInPricingCatalog.Version,
+            "official"));
         var overrides = data.Query("""
             SELECT provider, model, mode, token_type, minimum_input_tokens, maximum_input_tokens,
                    usd_per_token, effective_from_utc, effective_to_utc, source_name, source_url,
@@ -926,6 +939,19 @@ public sealed class PricingService
             sourceName,
             sourceUrl,
             true);
+    }
+
+    public int Deactivate(PriceDeactivateRequest request)
+    {
+        var now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        var mode = string.IsNullOrWhiteSpace(request.Mode) ? null : request.Mode;
+        var rows = data.Query("SELECT price_version_id FROM price_versions WHERE provider = $provider AND model = $model AND token_type = $tokenType AND effective_to_utc IS NULL AND ($mode IS NULL OR mode = $mode);", ("$provider", request.Provider), ("$model", request.Model), ("$tokenType", TokenTypeNormalizer.Normalize(request.TokenType)), ("$mode", (object?)mode ?? DBNull.Value));
+        foreach (var row in rows)
+        {
+            data.Execute("UPDATE price_versions SET effective_to_utc = $now WHERE price_version_id = $id;", ("$now", now), ("$id", String(row, "price_version_id")));
+        }
+
+        return rows.Count;
     }
 
     private static string String(Dictionary<string, object?> row, string name) => Convert.ToString(row[name], CultureInfo.InvariantCulture) ?? string.Empty;

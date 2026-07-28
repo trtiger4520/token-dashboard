@@ -151,11 +151,17 @@ function sumTokenCounts(tokens: TokenBreakdown): number {
 
 function normalizeDaily(row: JsonRecord): DailyStat {
   const tokenCounts = rowTokenCounts(row)
+  const eventCount = numberValue(row, 'eventCount', 'event_count')
+  const turnCount = numberValue(row, 'turnCount', 'turn_count')
+  const uniqueSessionCount = numberValue(row, 'uniqueSessionCount', 'unique_session_count', 'sessionCount', 'session_count')
   return {
     date: stringValue(row, 'date'),
     tokens: sumTokenCounts(tokenCounts),
     costUsd: nullableNumber(row, 'costUsd', 'cost_usd'),
-    sessions: numberValue(row, 'eventCount', 'event_count'),
+    eventCount,
+    turnCount,
+    uniqueSessionCount,
+    sessions: uniqueSessionCount,
     cacheHitRate: nullableNumber(row, 'cacheHitRate', 'cache_hit_rate')
   }
 }
@@ -163,13 +169,18 @@ function normalizeDaily(row: JsonRecord): DailyStat {
 function normalizeComparison(row: JsonRecord, kind: ComparisonRow['kind']): ComparisonRow {
   const tokenCounts = rowTokenCounts(row)
   const tokens = sumTokenCounts(tokenCounts)
-  const sessions = numberValue(row, 'eventCount', 'event_count')
+  const eventCount = numberValue(row, 'eventCount', 'event_count')
+  const turnCount = numberValue(row, 'turnCount', 'turn_count')
+  const uniqueSessionCount = numberValue(row, 'uniqueSessionCount', 'unique_session_count', 'sessionCount', 'session_count')
   return {
     name: stringValue(row, 'key', kind === 'tool' ? 'tool' : 'model') || 'unknown',
     kind,
     tokens,
-    sessions,
-    averageTokens: sessions ? Math.round(tokens / sessions) : 0,
+    eventCount,
+    turnCount,
+    uniqueSessionCount,
+    sessions: uniqueSessionCount,
+    averageTokens: uniqueSessionCount ? Math.round(tokens / uniqueSessionCount) : 0,
     costUsd: nullableNumber(row, 'costUsd', 'cost_usd'),
     cacheHitRate: nullableNumber(row, 'cacheHitRate', 'cache_hit_rate')
   }
@@ -235,6 +246,8 @@ function normalizeSession(summary: JsonRecord, detail: JsonRecord | undefined): 
       return total
     }, {}),
     costUsd: nullableNumber(summary, 'costUsd', 'cost_usd') ?? nullableNumber(detailSession, 'costUsd', 'cost_usd'),
+    eventCount: numberValue(summary, 'eventCount', 'event_count'),
+    turnCount: numberValue(summary, 'turnCount', 'turn_count'),
     partialCostUsd: numberValue(summary, 'partialCostUsd', 'partial_cost_usd'),
     pricedTokenCount: numberValue(summary, 'pricedTokenCount', 'priced_token_count'),
     unpricedTokenCount: numberValue(summary, 'unpricedTokenCount', 'unpriced_token_count'),
@@ -254,6 +267,8 @@ function normalizeOverview(row: JsonRecord): OverviewStat {
     timeZoneId: stringValue(row, 'timeZoneId', 'time_zone_id') || 'UTC',
     eventCount: numberValue(row, 'eventCount', 'event_count'),
     sessionCount: numberValue(row, 'sessionCount', 'session_count'),
+    uniqueSessionCount: numberValue(row, 'uniqueSessionCount', 'unique_session_count', 'sessionCount', 'session_count'),
+    turnCount: numberValue(row, 'turnCount', 'turn_count'),
     inputTokens,
     cachedInputTokens,
     outputTokens,
@@ -289,7 +304,10 @@ function normalizePricing(row: JsonRecord): PricingEntry {
     sourceUrl: stringValue(row, 'sourceUrl', 'source_url'),
     effectiveFromUtc: nullableString(row, 'effectiveFromUtc', 'effective_from_utc', 'effectiveFrom', 'effective_from', 'effectiveDate', 'effective_date'),
     effectiveToUtc: nullableString(row, 'effectiveToUtc', 'effective_to_utc', 'effectiveTo', 'effective_to'),
-    isOverride: Boolean(row.isOverride ?? row.is_override)
+    isOverride: Boolean(row.isOverride ?? row.is_override),
+    catalogVersion: stringValue(row, 'catalogVersion', 'catalog_version') || undefined,
+    createdAtUtc: stringValue(row, 'createdAtUtc', 'created_at_utc') || undefined,
+    sourceKind: stringValue(row, 'sourceKind', 'source_kind') || undefined
   }
 }
 
@@ -460,8 +478,25 @@ export class TokenDashboardClient {
     return this.json('/api/pricing', { method: 'PUT', body: JSON.stringify(request) })
   }
 
+  async unknownPricing(query: Pick<DashboardQuery, 'from' | 'to' | 'timeZone' | 'sourceId' | 'tool' | 'model' | 'tokenType'>): Promise<unknown[]> {
+    const params = new URLSearchParams({ from: query.from, to: query.to, timeZone: query.timeZone })
+    for (const key of ['sourceId', 'tool', 'model', 'tokenType'] as const) {
+      if (query[key]) params.set(key, query[key] as string)
+    }
+    return this.json(`/api/pricing/unknown?${params.toString()}`)
+  }
+
+  async deactivatePricing(request: { provider: string; model: string; tokenType: string; mode?: string }): Promise<unknown> {
+    return this.json('/api/pricing/deactivate', { method: 'POST', body: JSON.stringify(request) })
+  }
+
+  async revealEventField(sessionId: string, fingerprint: string, field: 'prompt' | 'response' | 'payload'): Promise<{ content: string; lineCount: number; truncated: boolean }> {
+    return this.json(`/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(fingerprint)}/${field}`)
+  }
+
   async export(format: 'csv' | 'json' | 'sqlite', query: Pick<DashboardQuery, 'from' | 'to' | 'timeZone'>): Promise<{ blob: Blob; warning: string | null }> {
-    const response = await this.response('/api/export', { method: 'POST', body: JSON.stringify({ format, includeContent: format !== 'csv', from: query.from, to: query.to, timeZone: query.timeZone }) })
+    const includeContent = format !== 'csv'
+    const response = await this.response('/api/export', { method: 'POST', body: JSON.stringify({ format, includeContent, confirmIncludeContent: includeContent, from: query.from, to: query.to, timeZone: query.timeZone }) })
     return { blob: await response.blob(), warning: response.headers.get('X-Token-Dashboard-Export-Warning') }
   }
 

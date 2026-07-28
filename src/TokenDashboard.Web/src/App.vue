@@ -10,16 +10,19 @@ import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { extractStartupKey, TokenDashboardClient, type SourceDiscoveryResult, type SyncRequest } from './api'
 import { isValidDateRange, resolveDateRange, resolveDayRange, type DatePreset } from './dateRange'
-import { createEmptyDashboardData, formatDateLabel, formatNumber, formatUsd, totalTokens, type DashboardData, type DashboardQuery, type EventKind, type SearchResult, type SessionRecord, type TagRecord, type TokenType } from './types'
+import { createEmptyDashboardData, formatDateLabel, formatNumber, formatUsd, totalTokens, type DashboardData, type DashboardQuery, type EventKind, type SearchResult, type SessionRecord, type TagRecord, type TokenType, type UnknownPricing } from './types'
 
 const client = new TokenDashboardClient()
 const data = ref<DashboardData>(createEmptyDashboardData())
+const unknownPricing = ref<UnknownPricing[]>([])
 const controlRailOpen = ref(false)
 const syncState = ref<'loading' | 'ready' | 'empty' | 'error' | 'partial'>('loading')
 const errorMessage = ref('')
 const operationMessage = ref('')
 const selectedSessionId = ref('')
 const selectedEventId = ref('')
+const revealedEventFields = reactive<Record<string, string>>({})
+const revealingEventFields = reactive<Record<string, boolean>>({})
 const inspectorTab = ref<'detail' | 'stats' | 'capabilities'>('detail')
 const searchTerm = ref('')
 const searchResults = ref<Array<SearchResult & { title: string }>>([])
@@ -71,7 +74,7 @@ const allTags = computed(() => [...new Set(data.value.tags.map((tag) => tag.key)
 const visibleSessions = computed(() => data.value.sessions)
 const totalTokenCount = computed(() => totalTokens(data.value.overview.tokenCounts))
 const totalCost = computed(() => data.value.overview.costUsd)
-const totalSessions = computed(() => data.value.overview.sessionCount)
+const totalSessions = computed(() => data.value.overview.uniqueSessionCount)
 const averageCache = computed(() => data.value.overview.cacheHitRate)
 const maxDailyTokens = computed(() => Math.max(...data.value.daily.map((day) => day.tokens), 1))
 const heatmapDays = computed(() => (data.value.heatmap.length ? data.value.heatmap : data.value.daily).map((day) => ({ ...day, intensity: Math.max(1, Math.ceil((day.tokens / maxDailyTokens.value) * 5)) })))
@@ -128,6 +131,11 @@ async function refresh(): Promise<void> {
   try {
     const result = await client.getDashboard(dashboardQuery())
     data.value = result
+    try {
+      unknownPricing.value = await client.unknownPricing(dashboardQuery()) as UnknownPricing[]
+    } catch {
+      unknownPricing.value = []
+    }
     syncState.value = result.sessions.length === 0 ? 'empty' : 'ready'
     if (!data.value.sessions.some((session) => session.id === selectedSessionId.value)) selectedSessionId.value = data.value.sessions[0]?.id ?? ''
   } catch (error) {
@@ -140,6 +148,26 @@ function selectSession(session: SessionRecord): void {
   selectedSessionId.value = session.id
   selectedEventId.value = ''
   inspectorTab.value = 'detail'
+}
+
+async function revealEventField(field: 'prompt' | 'response' | 'payload'): Promise<void> {
+  const sessionId = selectedSession.value?.id
+  const eventId = selectedEvent.value?.id
+  if (!sessionId || !eventId) return
+  const key = `${eventId}:${field}`
+  if (revealedEventFields[key] !== undefined) {
+    delete revealedEventFields[key]
+    return
+  }
+  revealingEventFields[key] = true
+  try {
+    const result = await client.revealEventField(sessionId, eventId, field)
+    revealedEventFields[key] = result.content
+  } catch (error) {
+    operationMessage.value = error instanceof Error ? error.message : '事件內容讀取失敗'
+  } finally {
+    revealingEventFields[key] = false
+  }
 }
 
 function selectDate(date: string): void {
@@ -360,6 +388,32 @@ async function savePricing(): Promise<void> {
   }
 }
 
+function prefillUnknown(entry: UnknownPricing): void {
+  pricingProvider.value = entry.provider
+  pricingModel.value = entry.model
+  pricingMode.value = entry.mode
+  pricingTokenType.value = entry.tokenType
+  pricingEffectiveFrom.value = entry.earliestEventUtc ? entry.earliestEventUtc.slice(0, 10) : ''
+}
+
+function revisePricing(entry: DashboardData['pricing']['entries'][number]): void {
+  pricingProvider.value = entry.provider
+  pricingModel.value = entry.model
+  pricingMode.value = entry.mode
+  pricingTokenType.value = entry.tokenType
+  pricingAmount.value = String(entry.usdPerMillionTokens)
+  pricingEffectiveFrom.value = entry.effectiveFromUtc?.slice(0, 10) ?? ''
+  pricingEffectiveTo.value = entry.effectiveToUtc?.slice(0, 10) ?? ''
+  pricingMinimum.value = String(entry.minimumInputTokens)
+  pricingMaximum.value = entry.maximumInputTokens === null ? '' : String(entry.maximumInputTokens)
+}
+
+async function deactivatePricing(provider: string, model: string, tokenType: string, mode: string): Promise<void> {
+  await client.deactivatePricing({ provider, model, tokenType, mode })
+  operationMessage.value = 'pricing override 已停用，歷史紀錄保留'
+  await refresh()
+}
+
 function eventClass(kind: EventKind): string {
   return `event-${kind}`
 }
@@ -400,8 +454,14 @@ onMounted(() => {
 
     <section v-if="currentRoute === '/pricing'" class="pricing-route" aria-labelledby="pricing-route-heading">
       <div class="route-heading"><span class="eyebrow">PRICE GOVERNANCE</span><h1 id="pricing-route-heading">價格治理</h1><p>內建 USD 規則與本機覆寫採歷史有效區間；未知價格維持未知</p><button class="button button-secondary" type="button" @click="navigate('/dashboard')">返回 Dashboard</button></div>
-      <div class="table-scroll"><table><caption class="sr-only">Pricing entries</caption><thead><tr><th>Provider</th><th>Model</th><th>Mode</th><th>Token type</th><th>USD / MTok</th><th>Effective</th><th>Source</th></tr></thead><tbody><tr v-for="entry in data.pricing.entries" :key="`${entry.provider}-${entry.model}-${entry.mode}-${entry.tokenType}-${entry.effectiveFromUtc}`"><td>{{ entry.provider }}</td><td>{{ entry.model }}</td><td>{{ entry.mode }}</td><td>{{ entry.tokenType }}</td><td class="mono">{{ entry.usdPerMillionTokens.toFixed(2) }}</td><td class="mono">{{ entry.effectiveFromUtc || '—' }}{{ entry.effectiveToUtc ? ` → ${entry.effectiveToUtc}` : '' }}</td><td>{{ entry.isOverride ? '本機覆寫' : entry.sourceName }}</td></tr></tbody></table></div>
+      <div class="pricing-coverage"><strong>Coverage</strong><span>{{ data.pricing.entries.length }} catalog entries · {{ data.pricing.overrideCount }} local overrides · {{ unknownPricing.length }} unknown combinations</span></div>
+      <div v-if="unknownPricing.length" class="pricing-unknown"><h2>未知價格組合</h2><p>以下組合未套用價格，成本維持未知</p><div class="table-scroll"><table><thead><tr><th>Provider</th><th>Model</th><th>Mode</th><th>Token type</th><th>首筆事件</th><th>Token 數</th><th></th></tr></thead><tbody><tr v-for="entry in unknownPricing" :key="`${entry.provider}-${entry.model}-${entry.mode}-${entry.tokenType}`"><td>{{ entry.provider }}</td><td>{{ entry.model }}</td><td>{{ entry.mode }}</td><td>{{ entry.tokenType }}</td><td class="mono">{{ entry.earliestEventUtc }}</td><td class="mono">{{ formatNumber(entry.tokenCount) }}</td><td><button class="button button-ghost" type="button" @click="prefillUnknown(entry)">建立 override</button></td></tr></tbody></table></div></div>
+      <section class="pricing-editor"><h2>建立 / 修訂本機覆寫</h2><div class="form-grid"><label>Provider<input v-model="pricingProvider" /></label><label>Model<input v-model="pricingModel" /></label><label>Token type<input v-model="pricingTokenType" /></label><label>Mode<input v-model="pricingMode" /></label><label>USD / MTok<input v-model="pricingAmount" inputmode="decimal" /></label><label>Effective from<input v-model="pricingEffectiveFrom" type="date" /></label><label>Effective to<input v-model="pricingEffectiveTo" type="date" /></label><label>Min input tokens<input v-model="pricingMinimum" inputmode="numeric" /></label><label>Max input tokens<input v-model="pricingMaximum" inputmode="numeric" /></label></div><button class="button button-primary" type="button" @click="void savePricing()">儲存 override</button></section>
+      <section><h2>Official catalog (read-only)</h2><div class="table-scroll"><table><caption class="sr-only">Official pricing entries</caption><tbody><tr v-for="entry in data.pricing.entries.filter((item) => !item.isOverride)" :key="`official-${entry.provider}-${entry.model}-${entry.mode}-${entry.tokenType}`"><td>{{ entry.provider }}</td><td>{{ entry.model }}</td><td>{{ entry.tokenType }}</td><td class="mono">{{ entry.usdPerMillionTokens.toFixed(2) }}</td><td>{{ entry.sourceName }} · {{ entry.sourceUrl }}</td><td>{{ entry.catalogVersion || data.pricing.version }}</td></tr></tbody></table></div></section>
+       <section><h2>Local override history</h2><div class="table-scroll"><table><thead><tr><th>Provider</th><th>Model</th><th>Token type</th><th>USD / MTok</th><th>有效區間</th><th>操作</th></tr></thead><tbody><tr v-for="entry in data.pricing.entries.filter((item) => item.isOverride)" :key="`override-${entry.provider}-${entry.model}-${entry.mode}-${entry.tokenType}-${entry.effectiveFromUtc}`"><td>{{ entry.provider }}</td><td>{{ entry.model }}</td><td>{{ entry.tokenType }}</td><td class="mono">{{ entry.usdPerMillionTokens.toFixed(2) }}</td><td>{{ entry.effectiveFromUtc }}{{ entry.effectiveToUtc ? ` → ${entry.effectiveToUtc}` : '' }}</td><td><button class="button button-ghost" type="button" @click="revisePricing(entry)">修訂</button><button v-if="!entry.effectiveToUtc" class="button button-ghost" type="button" @click="void deactivatePricing(entry.provider, entry.model, entry.tokenType, entry.mode)">停用</button></td></tr></tbody></table></div></section>
     </section>
+
+    <section v-if="currentRoute === '/pricing'" class="pricing-revise-actions" aria-label="Pricing override actions"><h2 class="sr-only">Override actions</h2><button v-for="entry in data.pricing.entries.filter((item) => item.isOverride)" :key="`revise-${entry.provider}-${entry.model}-${entry.mode}-${entry.tokenType}-${entry.effectiveFromUtc}`" class="button button-ghost" type="button" @click="revisePricing(entry)">修訂 {{ entry.provider }}/{{ entry.model }}/{{ entry.tokenType }}</button></section>
 
     <div v-if="currentRoute === '/dashboard'" class="dashboard-layout">
       <aside id="control-rail" class="control-rail" :class="{ 'rail-open': controlRailOpen }" aria-label="控制與資料工具">
@@ -452,9 +512,9 @@ onMounted(() => {
         <button id="control-toggle" class="mobile-control-toggle" type="button" aria-controls="control-rail" :aria-expanded="controlRailOpen" @click="controlRailOpen = !controlRailOpen"><span>篩選與資料工具</span><span class="mono">{{ controlRailOpen ? '收合' : '展開' }}</span></button>
         <div v-if="syncState === 'partial'" class="state-banner state-warning" role="status"><strong>部分同步</strong><span>{{ operationMessage || '來源同步只完成部分工作，請檢查來源狀態後重新同步' }}</span></div>
         <div v-if="syncState === 'error'" class="state-banner state-error" role="alert"><strong>讀取失敗</strong><span>{{ errorMessage }}</span><button class="button button-secondary" type="button" @click="void refresh()">重試</button></div>
-        <div v-if="data.pricing.unknownCount > 0" class="state-banner state-info" role="status"><strong>未知價格 {{ data.pricing.unknownCount }} 筆</strong><span>找不到有效的歷史價格時保留未知，不以推估值替代</span><button class="button button-ghost" type="button" @click="inspectorTab = 'stats'">查看定價</button></div>
+        <div v-if="data.pricing.unknownCount > 0" class="state-banner state-info" role="status"><strong>未知價格 {{ data.pricing.unknownCount }} 筆</strong><span>找不到有效的歷史價格時保留未知，不以推估值替代</span><button class="button button-ghost" type="button" @click="navigate('/pricing')">查看定價</button></div>
 
-        <div class="workspace-meta mono">snapshot {{ data.generatedAt.replace('T', ' ').replace('Z', ' UTC') }}</div>
+         <div class="workspace-meta mono">snapshot {{ data.generatedAt.replace('T', ' ').replace('Z', ' UTC') }} · {{ data.overview.eventCount }} events · {{ data.overview.uniqueSessionCount }} unique sessions · {{ data.overview.turnCount }} turns</div>
 
         <div v-if="syncState === 'loading'" class="loading-grid" aria-label="正在載入 dashboard"><div v-for="index in 4" :key="index" class="skeleton"></div></div>
         <div v-else-if="syncState === 'empty'" class="empty-state"><span class="eyebrow">NO LOCAL EVENTS</span><h3>目前日期範圍沒有事件</h3><p>調整日期或來源篩選，或從左側匯入 JSON / CSV 來源</p><button class="button button-primary" type="button" @click="applyPreset('30')">回到最近 30 天</button></div>
@@ -462,21 +522,21 @@ onMounted(() => {
           <section class="kpi-grid" aria-label="總覽指標">
             <article class="kpi-panel"><span class="eyebrow">TOTAL TOKENS</span><strong>{{ formatNumber(totalTokenCount) }}</strong><span class="kpi-meta">輸入、輸出與快取合計</span></article>
             <article class="kpi-panel"><span class="eyebrow">EST. COST</span><strong>{{ formatUsd(totalCost) }}</strong><span class="kpi-meta">USD · price {{ data.pricing.version }}</span><span v-if="data.overview.costUsd === null" class="kpi-meta">已計價部分 {{ formatUsd(data.overview.partialCostUsd) }} · 覆蓋 {{ data.overview.costCoverage === null ? '未知' : `${Math.round(data.overview.costCoverage * 100)}%` }}</span></article>
-            <article class="kpi-panel"><span class="eyebrow">SESSIONS</span><strong>{{ totalSessions }}</strong><span class="kpi-meta">overview 全域總覽 · {{ visibleSessions.length }} 筆載入</span></article>
+             <article class="kpi-panel"><span class="eyebrow">EVENTS / SESSIONS</span><strong>{{ formatNumber(data.overview.eventCount) }} / {{ formatNumber(totalSessions) }}</strong><span class="kpi-meta">Events / Unique sessions · {{ visibleSessions.length }} 筆 Session 載入</span></article>
             <article class="kpi-panel"><span class="eyebrow">CACHE HIT</span><strong>{{ averageCache === null ? '未知' : `${Math.round(averageCache * 100)}%` }}</strong><span class="kpi-meta">覆蓋 {{ data.overview.cacheCoverage === null ? '未知' : `${Math.round(data.overview.cacheCoverage * 100)}%` }} · {{ data.overview.cacheUnreportedEventCount }} 筆未回報</span></article>
           </section>
 
           <div class="evidence-grid">
-            <section class="panel daily-panel" aria-labelledby="daily-heading"><div class="panel-header"><div><span class="eyebrow">DAILY STATISTICS</span><h3 id="daily-heading">日統計</h3></div><span class="badge badge-neutral">{{ data.daily.length }} 日</span></div><div class="chart-wrap"><svg class="daily-chart" viewBox="0 0 620 180" role="img" aria-label="每日 token 使用量折線圖"><line x1="24" y1="150" x2="600" y2="150" class="chart-rule" /><polyline :points="data.daily.map((day, index) => `${28 + index * (560 / Math.max(data.daily.length - 1, 1))},${150 - (day.tokens / maxDailyTokens) * 112}`).join(' ')" class="chart-line" /><circle v-for="(day, index) in data.daily" :key="day.date" :cx="28 + index * (560 / Math.max(data.daily.length - 1, 1))" :cy="150 - (day.tokens / maxDailyTokens) * 112" r="3" class="chart-point" /></svg><div class="chart-labels"><button v-for="day in data.daily" :key="day.date" type="button" :class="{ selected: selectedDate === day.date }" @click="selectDate(day.date)">{{ formatDateLabel(day.date) }}</button></div></div><div class="stat-strip"><span><b>{{ formatNumber(data.daily.reduce((sum, item) => sum + item.tokens, 0)) }}</b> tokens</span><span><b>{{ formatNumber(data.daily.reduce((sum, item) => sum + item.sessions, 0)) }}</b> sessions</span><span><b>{{ formatUsd(data.daily.find((item) => item.costUsd === null)?.costUsd ?? data.daily.reduce<number>((sum, item) => sum + (item.costUsd ?? 0), 0)) }}</b> cost</span></div></section>
+             <section class="panel daily-panel" aria-labelledby="daily-heading"><div class="panel-header"><div><span class="eyebrow">DAILY STATISTICS</span><h3 id="daily-heading">日統計</h3></div><span class="badge badge-neutral">{{ data.daily.length }} 日</span></div><div class="chart-wrap"><svg class="daily-chart" viewBox="0 0 620 180" role="img" aria-label="每日 token 使用量折線圖"><line x1="24" y1="150" x2="600" y2="150" class="chart-rule" /><polyline :points="data.daily.map((day, index) => `${28 + index * (560 / Math.max(data.daily.length - 1, 1))},${150 - (day.tokens / maxDailyTokens) * 112}`).join(' ')" class="chart-line" /><circle v-for="(day, index) in data.daily" :key="day.date" :cx="28 + index * (560 / Math.max(data.daily.length - 1, 1))" :cy="150 - (day.tokens / maxDailyTokens) * 112" r="3" class="chart-point" /></svg><div class="chart-labels"><button v-for="day in data.daily" :key="day.date" type="button" :class="{ selected: selectedDate === day.date }" @click="selectDate(day.date)">{{ formatDateLabel(day.date) }}</button></div></div><div class="stat-strip"><span><b>{{ formatNumber(data.daily.reduce((sum, item) => sum + item.tokens, 0)) }}</b> tokens</span><span><b>{{ formatNumber(data.daily.reduce((sum, item) => sum + item.eventCount, 0)) }}</b> events</span><span><b>{{ formatNumber(data.daily.reduce((sum, item) => sum + item.uniqueSessionCount, 0)) }}</b> unique sessions</span><span><b>{{ formatUsd(data.daily.find((item) => item.costUsd === null)?.costUsd ?? data.daily.reduce<number>((sum, item) => sum + (item.costUsd ?? 0), 0)) }}</b> cost</span></div></section>
             <section class="panel heatmap-panel" aria-labelledby="heatmap-heading"><div class="panel-header"><div><span class="eyebrow">ACTIVITY MAP</span><h3 id="heatmap-heading">日期熱力圖</h3></div><span class="mono">tokens / day</span></div><div class="heatmap" role="grid" aria-label="每日 token 熱力圖"><button v-for="day in heatmapDays" :key="day.date" class="heatmap-cell" :class="[`intensity-${day.intensity}`, { selected: selectedDate === day.date }]" type="button" role="gridcell" :aria-label="`${day.date} ${formatNumber(day.tokens)} tokens`" @click="selectDate(day.date)"><span>{{ new Date(`${day.date}T00:00:00`).getDate() }}</span></button></div><div class="heatmap-legend"><span>少</span><i v-for="level in 5" :key="level" :class="`intensity-${level}`"></i><span>多</span></div><div class="panel-footnote">選取日期會將事件日期加入全文搜尋條件</div></section>
           </div>
 
-          <section class="panel comparison-panel" aria-labelledby="comparison-heading"><div class="panel-header"><div><span class="eyebrow">MODEL / TOOL COMPARISON</span><h3 id="comparison-heading">比較矩陣</h3></div><span class="badge badge-neutral">{{ data.comparisons.length }} rows</span></div><div class="table-scroll"><table><caption class="sr-only">模型與工具 token 消耗比較</caption><thead><tr><th scope="col">名稱</th><th scope="col">類型</th><th scope="col">Tokens</th><th scope="col">Sessions</th><th scope="col">Avg / session</th><th scope="col">Cost</th><th scope="col">Cache hit</th></tr></thead><tbody><tr v-for="row in data.comparisons" :key="`${row.kind}-${row.name}`"><th scope="row" class="name-cell">{{ row.name }}</th><td><span class="badge badge-neutral">{{ row.kind === 'model' ? '模型' : '工具' }}</span></td><td class="mono">{{ formatNumber(row.tokens) }}</td><td class="mono">{{ row.sessions }}</td><td class="mono">{{ formatNumber(row.averageTokens) }}</td><td class="mono" :class="{ unknown: row.costUsd === null }">{{ formatUsd(row.costUsd) }}</td><td class="mono">{{ row.cacheHitRate === null ? '未知' : `${Math.round(row.cacheHitRate * 100)}%` }}</td></tr></tbody></table></div></section>
+           <section class="panel comparison-panel" aria-labelledby="comparison-heading"><div class="panel-header"><div><span class="eyebrow">MODEL / TOOL COMPARISON</span><h3 id="comparison-heading">比較矩陣</h3></div><span class="badge badge-neutral">{{ data.comparisons.length }} rows</span></div><div class="table-scroll"><table><caption class="sr-only">模型與工具 token 消耗比較</caption><thead><tr><th scope="col">名稱</th><th scope="col">類型</th><th scope="col">Tokens</th><th scope="col">Events</th><th scope="col">Unique sessions</th><th scope="col">Turns</th><th scope="col">Avg tokens / session</th><th scope="col">Cost</th><th scope="col">Cache hit</th></tr></thead><tbody><tr v-for="row in data.comparisons" :key="`${row.kind}-${row.name}`"><th scope="row" class="name-cell">{{ row.name }}</th><td><span class="badge badge-neutral">{{ row.kind === 'model' ? '模型' : '工具' }}</span></td><td class="mono">{{ formatNumber(row.tokens) }}</td><td class="mono">{{ row.eventCount }}</td><td class="mono">{{ row.uniqueSessionCount }}</td><td class="mono">{{ row.turnCount }}</td><td class="mono">{{ formatNumber(row.averageTokens) }}</td><td class="mono" :class="{ unknown: row.costUsd === null }">{{ formatUsd(row.costUsd) }}</td><td class="mono">{{ row.cacheHitRate === null ? '未知' : `${Math.round(row.cacheHitRate * 100)}%` }}</td></tr></tbody></table></div></section>
 
           <section class="panel sessions-panel" aria-labelledby="sessions-heading"><div class="panel-header"><div><span class="eyebrow">SESSION LEDGER</span><h3 id="sessions-heading">Session ledger</h3></div><div class="search-control"><label class="sr-only" for="full-search">搜尋 Session、Turn、Prompt、Response、tool</label><input id="full-search" v-model="searchTerm" type="search" placeholder="搜尋全文" @input="void runSearch()" /><kbd>Ctrl K</kbd></div></div><div v-if="searchTerm" class="search-results" aria-live="polite"><span class="eyebrow">SEARCH RESULTS</span><span>{{ searchError || `${searchResults.length} 筆相符` }}</span><button v-for="result in searchResults" :key="result.itemId" class="result-link" type="button" @click="result.sessionId && selectSession(data.sessions.find((session) => session.id === result.sessionId)!)">{{ result.title }}</button></div><div class="session-list"><button v-for="session in visibleSessions" :key="session.id" class="session-row" :class="{ selected: selectedSessionId === session.id }" type="button" @click="selectSession(session)"><span class="session-main"><strong>{{ session.title }}</strong><span>{{ session.source }} · {{ session.model }}</span></span><span class="session-meta"><span class="mono">{{ formatNumber(totalTokens(session.tokens)) }}</span><span>{{ eventCount(session) }} events</span><span class="mono" :class="{ unknown: session.costUsd === null }">{{ formatUsd(session.costUsd) }}</span></span></button></div></section>
 
-          <section v-if="selectedSession" class="panel timeline-panel" aria-labelledby="timeline-heading"><div class="panel-header"><div><span class="eyebrow">SESSION · TURN · EVENT</span><h3 id="timeline-heading">{{ selectedSession.title }}</h3><p>{{ selectedSession.startedAt }} — {{ selectedSession.endedAt }} · {{ selectedSession.source }} · {{ selectedSession.model }}</p></div><div class="tag-list"><span v-for="tag in selectedSession.tags" :key="tag" class="tag">{{ tag }} <button type="button" :aria-label="`移除標籤 ${tag}`" @click="removeTag(tag)">移除</button></span></div></div><div class="timeline"><div v-for="turn in selectedSession.turns" :key="turn.id" class="turn-block"><div class="turn-label"><span class="turn-number">{{ turn.number }}</span><span>Turn {{ turn.number }}</span><span class="mono">{{ formatNumber(totalTokens(turn.tokens)) }} tokens</span></div><div class="event-list"><button v-for="event in turn.events" :key="event.id" class="event-row" :class="[eventClass(event.kind), { selected: selectedEventId === event.id }]" type="button" @click="selectedEventId = event.id"><span class="event-kind">{{ event.label }}</span><span class="event-summary">{{ event.summary }}</span><span class="mono">{{ event.tokens ? formatNumber(event.tokens) : '—' }}</span></button></div></div></div><div v-if="selectedEvent" class="event-detail"><span class="eyebrow">EVENT DETAIL</span><strong>{{ selectedEvent.label }} · {{ selectedEvent.timestamp }}</strong><p>{{ selectedEvent.detail ?? selectedEvent.summary }}</p></div><div class="tag-editor"><label for="tag-input">新增 tag<input id="tag-input" v-model="tagInput" placeholder="例如 review" @keyup.enter="addTag" /></label><label>Scope<select v-model="tagScope"><option value="session">Session</option><option value="project">Project</option><option value="source">Source</option></select></label><label>Entity target<input v-model="tagEntityId" :placeholder="tagScope === 'session' ? selectedSession.id : 'source-or-project-id'" /></label><label>Value<input v-model="tagValue" placeholder="可選值" /></label><button class="button button-secondary" type="button" @click="addTag">加入</button></div></section>
-          <section class="panel monthly-panel" aria-labelledby="monthly-heading"><div class="panel-header"><div><span class="eyebrow">MONTHLY ROLLUP</span><h3 id="monthly-heading">月統計</h3></div><span class="mono">UTC month boundary</span></div><div class="monthly-list"><div v-for="month in data.monthly" :key="month.date" class="monthly-row"><strong>{{ month.date.slice(0, 7) }}</strong><span class="mono">{{ formatNumber(month.tokens) }} tokens</span><span>{{ month.sessions }} sessions</span><span class="mono" :class="{ unknown: month.costUsd === null }">{{ formatUsd(month.costUsd) }}</span><span>{{ month.cacheHitRate === null ? '未知快取' : `${Math.round(month.cacheHitRate * 100)}% cache` }}</span></div></div></section>
+          <section v-if="selectedSession" class="panel timeline-panel" aria-labelledby="timeline-heading"><div class="panel-header"><div><span class="eyebrow">SESSION · TURN · EVENT</span><h3 id="timeline-heading">{{ selectedSession.title }}</h3><p>{{ selectedSession.startedAt }} — {{ selectedSession.endedAt }} · {{ selectedSession.source }} · {{ selectedSession.model }}</p></div><div class="tag-list"><span v-for="tag in selectedSession.tags" :key="tag" class="tag">{{ tag }} <button type="button" :aria-label="`移除標籤 ${tag}`" @click="removeTag(tag)">移除</button></span></div></div><div class="timeline"><div v-for="turn in selectedSession.turns" :key="turn.id" class="turn-block"><div class="turn-label"><span class="turn-number">{{ turn.number }}</span><span>Turn {{ turn.number }}</span><span class="mono">{{ formatNumber(totalTokens(turn.tokens)) }} tokens</span></div><div class="event-list"><button v-for="event in turn.events" :key="event.id" class="event-row" :class="[eventClass(event.kind), { selected: selectedEventId === event.id }]" type="button" @click="selectedEventId = event.id"><span class="event-kind">{{ event.label }}</span><span class="event-summary">{{ event.summary }}</span><span class="mono">{{ event.tokens ? formatNumber(event.tokens) : '—' }}</span></button></div></div></div><div v-if="selectedEvent" class="event-detail"><span class="eyebrow">EVENT DETAIL</span><strong>{{ selectedEvent.label }} · {{ selectedEvent.timestamp }}</strong><p>{{ selectedEvent.detail ?? selectedEvent.summary }}</p><div class="event-reveal-grid"><div v-for="field in (['prompt', 'response', 'payload'] as const)" :key="field" class="event-reveal"><button class="button button-secondary" type="button" @click="void revealEventField(field)">{{ revealedEventFields[`${selectedEvent.id}:${field}`] !== undefined ? `收合 ${field}` : `展開 ${field}` }}</button><span v-if="revealingEventFields[`${selectedEvent.id}:${field}`]">讀取中…</span><pre v-else-if="revealedEventFields[`${selectedEvent.id}:${field}`] !== undefined">{{ revealedEventFields[`${selectedEvent.id}:${field}`] }}</pre></div></div></div><div class="tag-editor"><label for="tag-input">新增 tag<input id="tag-input" v-model="tagInput" placeholder="例如 review" @keyup.enter="addTag" /></label><label>Scope<select v-model="tagScope"><option value="session">Session</option><option value="project">Project</option><option value="source">Source</option></select></label><label>Entity target<input v-model="tagEntityId" :placeholder="tagScope === 'session' ? selectedSession.id : 'source-or-project-id'" /></label><label>Value<input v-model="tagValue" placeholder="可選值" /></label><button class="button button-secondary" type="button" @click="addTag">加入</button></div></section>
+           <section class="panel monthly-panel" aria-labelledby="monthly-heading"><div class="panel-header"><div><span class="eyebrow">MONTHLY ROLLUP</span><h3 id="monthly-heading">月統計</h3></div><span class="mono">{{ data.overview.timeZoneId }} month boundary</span></div><div class="monthly-list"><div v-for="month in data.monthly" :key="month.date" class="monthly-row"><strong>{{ month.date.slice(0, 7) }}</strong><span class="mono">{{ formatNumber(month.tokens) }} tokens</span><span>{{ month.eventCount }} events · {{ month.uniqueSessionCount }} unique sessions · {{ month.turnCount }} turns</span><span class="mono" :class="{ unknown: month.costUsd === null }">{{ formatUsd(month.costUsd) }}</span><span>{{ month.cacheHitRate === null ? '未知快取' : `${Math.round(month.cacheHitRate * 100)}% cache` }}</span></div></div></section>
         </template>
       </main>
 

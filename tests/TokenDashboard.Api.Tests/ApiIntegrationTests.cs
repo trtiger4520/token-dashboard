@@ -242,7 +242,7 @@ public sealed class ApiIntegrationTests
         Assert.DoesNotContain("sensitive", jsonBody);
         Assert.False(json.Headers.Contains("X-Token-Dashboard-Export-Warning"));
 
-        var jsonWithContent = await client.PostAsJsonAsync("/api/export", new ExportRequest("json", IncludeContent: true));
+        var jsonWithContent = await client.PostAsJsonAsync("/api/export", new ExportRequest("json", IncludeContent: true, ConfirmIncludeContent: true));
         var jsonWithContentBody = await jsonWithContent.Content.ReadAsStringAsync();
         Assert.Contains("private prompt", jsonWithContentBody);
         Assert.Contains("sensitive", jsonWithContentBody);

@@ -29,6 +29,8 @@ public sealed record PriceWriteRequest(
     string? SourceName = null,
     string? SourceUrl = null);
 
+public sealed record PriceDeactivateRequest(string Provider, string Model, string TokenType, string? Mode = null);
+
 public sealed record PricingEntryDto(
     string Provider,
     string Model,
@@ -50,6 +52,7 @@ public sealed record PricingEntryDto(
 public sealed record ExportRequest(
     string Format,
     bool IncludeContent = false,
+    bool ConfirmIncludeContent = false,
     string? Preset = null,
     string? From = null,
     string? To = null,

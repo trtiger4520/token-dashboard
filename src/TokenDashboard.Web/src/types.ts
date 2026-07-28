@@ -8,6 +8,8 @@ export interface OverviewStat {
   timeZoneId: string
   eventCount: number
   sessionCount: number
+  uniqueSessionCount: number
+  turnCount: number
   inputTokens: number
   cachedInputTokens: number
   outputTokens: number
@@ -31,6 +33,9 @@ export interface DailyStat {
   date: string
   tokens: number
   costUsd: number | null
+  eventCount: number
+  turnCount: number
+  uniqueSessionCount: number
   sessions: number
   cacheHitRate: number | null
 }
@@ -39,6 +44,9 @@ export interface ComparisonRow {
   name: string
   kind: 'model' | 'tool'
   tokens: number
+  eventCount: number
+  turnCount: number
+  uniqueSessionCount: number
   sessions: number
   averageTokens: number
   costUsd: number | null
@@ -75,6 +83,8 @@ export interface SessionRecord {
   endedAt: string
   tokens: TokenBreakdown
   costUsd: number | null
+  eventCount?: number
+  turnCount?: number
   partialCostUsd?: number
   pricedTokenCount?: number
   unpricedTokenCount?: number
@@ -145,6 +155,19 @@ export interface PricingEntry {
   effectiveFromUtc: string | null
   effectiveToUtc: string | null
   isOverride: boolean
+  catalogVersion?: string
+  createdAtUtc?: string
+  sourceKind?: string
+}
+
+export interface UnknownPricing {
+  provider: string
+  model: string
+  mode: string
+  tokenType: string
+  earliestEventUtc: string
+  latestEventUtc: string
+  tokenCount: number
 }
 
 export interface SearchResult {
@@ -187,6 +210,8 @@ export function createEmptyDashboardData(): DashboardData {
       timeZoneId: 'UTC',
       eventCount: 0,
       sessionCount: 0,
+      uniqueSessionCount: 0,
+      turnCount: 0,
       inputTokens: 0,
       cachedInputTokens: 0,
       outputTokens: 0,

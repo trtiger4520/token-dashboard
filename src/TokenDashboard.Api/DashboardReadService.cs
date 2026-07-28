@@ -67,6 +67,45 @@ public sealed class DashboardReadService
         return ApplyFilter(events, filter).ToArray();
     }
 
+    public IReadOnlyList<object> UnknownPricing(DateRange range, DashboardFilter? filter = null)
+    {
+        var unknown = new Dictionary<string, (string Provider, string Model, string Mode, string TokenType, DateTimeOffset First, DateTimeOffset Last, long Count)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in Events(range, filter))
+        {
+            var provider = ProviderFor(item);
+            var totalInput = item.InputTokens + item.CacheReadTokens;
+            foreach (var pair in item.Tokens.Where(static pair => pair.Value > 0))
+            {
+                if (pricing.Resolve(provider, item.Model, pair.Key, item.OccurredAtUtc, totalInput, item.Mode) is not null)
+                {
+                    continue;
+                }
+
+                var mode = string.IsNullOrWhiteSpace(item.Mode) ? "standard" : item.Mode!;
+                var key = $"{provider}|{item.Model}|{mode}|{TokenTypeNormalizer.Normalize(pair.Key)}";
+                if (unknown.TryGetValue(key, out var existing))
+                {
+                    unknown[key] = existing with { First = existing.First < item.OccurredAtUtc ? existing.First : item.OccurredAtUtc, Last = existing.Last > item.OccurredAtUtc ? existing.Last : item.OccurredAtUtc, Count = existing.Count + pair.Value };
+                }
+                else
+                {
+                    unknown[key] = (provider, item.Model, mode, TokenTypeNormalizer.Normalize(pair.Key), item.OccurredAtUtc, item.OccurredAtUtc, pair.Value);
+                }
+            }
+        }
+
+        return unknown.Values.OrderBy(item => item.First).Select(item => (object)new
+        {
+            provider = item.Provider,
+            model = item.Model,
+            mode = item.Mode,
+            tokenType = item.TokenType,
+            earliestEventUtc = item.First,
+            latestEventUtc = item.Last,
+            tokenCount = item.Count
+        }).ToArray();
+    }
+
     public object Overview(DateRange range, DashboardFilter? filter = null)
     {
         var events = StatisticalEvents(range, filter);
@@ -79,6 +118,9 @@ public sealed class DashboardReadService
             range.TimeZoneId,
             eventCount = events.Length,
             sessionCount = events.Select(item => item.SessionId).Where(static value => value is not null).Distinct(StringComparer.Ordinal).Count(),
+            uniqueSessionCount = events.Select(item => item.SessionId).Where(static value => value is not null).Distinct(StringComparer.Ordinal).Count(),
+            turnCount = events.Select(item => item.TurnId).Where(static value => value is not null).Distinct(StringComparer.Ordinal).Count(),
+            coverage = CoverageMetadata(events, range),
             totalTokens = tokens.Values.Sum(),
             tokens,
             tokenTypes = tokens,
@@ -153,6 +195,8 @@ public sealed class DashboardReadService
                     workspaceId = NullableString(row, "workspace_id"),
                     ownerId = NullableString(row, "owner_id"),
                     eventCount = sessionEvents.Length,
+                    uniqueSessionCount = sessionEvents.Length == 0 ? 0 : 1,
+                    turnCount = sessionEvents.Select(item => item.TurnId).Where(static value => value is not null).Distinct(StringComparer.Ordinal).Count(),
                     totalTokens = tokens.Values.Sum(),
                     tokens,
                     tokenTypes = tokens,
@@ -242,6 +286,39 @@ public sealed class DashboardReadService
         };
     }
 
+    public object? EventContent(string sessionId, string fingerprint, string field)
+    {
+        var column = field.Trim().ToLowerInvariant() switch
+        {
+            "prompt" => "prompt",
+            "response" => "response",
+            "payload" => "payload",
+            _ => null
+        };
+        if (column is null)
+        {
+            return null;
+        }
+
+        var row = data.Query($"SELECT event_fingerprint, {column} AS content FROM sub_events WHERE session_id = $sessionId AND event_fingerprint = $fingerprint;", ("$sessionId", sessionId), ("$fingerprint", fingerprint)).SingleOrDefault();
+        if (row is null)
+        {
+            return null;
+        }
+
+        var content = Convert.ToString(row["content"], CultureInfo.InvariantCulture) ?? string.Empty;
+        var lines = content.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        var preview = string.Join('\n', lines.Take(5));
+        return new
+        {
+            eventFingerprint = String(row, "event_fingerprint"),
+            field = column,
+            content = preview,
+            lineCount = lines.Length,
+            truncated = lines.Length > 5
+        };
+    }
+
     private static string MaskContent(string body)
     {
         var lines = body.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
@@ -301,6 +378,8 @@ public sealed class DashboardReadService
         {
             [label] = key,
             ["eventCount"] = array.Length,
+            ["uniqueSessionCount"] = array.Select(item => item.SessionId).Where(static value => value is not null).Distinct(StringComparer.Ordinal).Count(),
+            ["turnCount"] = array.Select(item => item.TurnId).Where(static value => value is not null).Distinct(StringComparer.Ordinal).Count(),
             ["totalTokens"] = tokens.Values.Sum(),
             ["tokens"] = tokens,
             ["tokenTypes"] = tokens,
@@ -316,6 +395,21 @@ public sealed class DashboardReadService
             ["pricedTokenCount"] = coverage.PricedTokens,
             ["unpricedTokenCount"] = coverage.UnpricedTokens,
             ["costCoverage"] = coverage.TotalTokens == 0 ? (decimal?)null : (decimal)coverage.PricedTokens / coverage.TotalTokens
+        };
+    }
+
+    private static object CoverageMetadata(EventRow[] events, DateRange range)
+    {
+        var first = events.Length == 0 ? (DateTimeOffset?)null : events.Min(item => item.OccurredAtUtc);
+        var last = events.Length == 0 ? (DateTimeOffset?)null : events.Max(item => item.OccurredAtUtc);
+        return new
+        {
+            selected = new { fromUtc = range.FromUtc, toUtc = range.ToUtc, timeZoneId = range.TimeZoneId },
+            eventCount = events.Length,
+            firstEventAtUtc = first,
+            lastEventAtUtc = last,
+            hasEvents = events.Length > 0,
+            sourceTimeZones = events.Select(item => item.SourceTimeZone).Where(static value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
         };
     }
 

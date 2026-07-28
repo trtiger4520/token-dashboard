@@ -73,6 +73,10 @@ public static class ProgramEntry
             dashboard.Session(sessionId, string.Equals(request.Query["reveal"], "true", StringComparison.OrdinalIgnoreCase) || string.Equals(request.Query["includeContent"], "true", StringComparison.OrdinalIgnoreCase) || string.Equals(request.Query["showContent"], "true", StringComparison.OrdinalIgnoreCase)) is { } session
                 ? Results.Ok(session)
                 : Results.NotFound());
+        app.MapGet("/api/sessions/{sessionId}/events/{fingerprint}/{field}", (string sessionId, string fingerprint, string field, DashboardReadService dashboard) =>
+            dashboard.EventContent(sessionId, fingerprint, field) is { } content
+                ? Results.Ok(content)
+                : Results.NotFound());
 
         app.MapGet("/api/search", (HttpRequest request, DashboardReadService dashboard) =>
         {
@@ -93,6 +97,7 @@ public static class ProgramEntry
         app.MapDelete("/api/tags/{scope}/{entityId}/{tagId}", (HttpRequest request, string scope, string entityId, string tagId, DashboardDataService data) => RemoveTag(request, scope, entityId, tagId, data));
 
         app.MapGet("/api/pricing", (PricingService pricing) => Results.Ok(new { currency = "USD", catalogVersion = BuiltInPricingCatalog.Version, overrideCount = pricing.OverrideCount, entries = pricing.List() }));
+        app.MapGet("/api/pricing/unknown", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.UnknownPricing(Range(request), Filter(request))));
         app.MapPut("/api/pricing", ([FromBody] PriceWriteRequest request, [FromServices] PricingService pricing) =>
         {
             var effectiveFrom = (request.EffectiveFromUtc ?? DateTimeOffset.UtcNow).ToUniversalTime();
@@ -103,6 +108,15 @@ public static class ProgramEntry
             }
 
             return Results.Ok(pricing.Add(request with { EffectiveFromUtc = effectiveFrom, EffectiveToUtc = effectiveTo }));
+        });
+        app.MapPost("/api/pricing/deactivate", ([FromBody] PriceDeactivateRequest request, PricingService pricing) =>
+        {
+            if (string.IsNullOrWhiteSpace(request.Provider) || string.IsNullOrWhiteSpace(request.Model) || string.IsNullOrWhiteSpace(request.TokenType))
+            {
+                return Results.BadRequest(new { error = "provider, model and tokenType are required" });
+            }
+
+            return Results.Ok(new { deactivated = pricing.Deactivate(request) });
         });
 
         app.MapGet("/api/sources/capabilities", (SourceAdapterRegistry registry) => Results.Ok(registry.All.Select(item => item.GetCapabilities())));
@@ -356,6 +370,11 @@ public static class ProgramEntry
 
         if (format == "json")
         {
+            if (request.IncludeContent && !request.ConfirmIncludeContent)
+            {
+                return Results.BadRequest(new { error = "ConfirmIncludeContent is required for JSON exports containing conversation content" });
+            }
+
             if (request.IncludeContent)
             {
                 response.Headers["X-Token-Dashboard-Export-Warning"] = "Contains complete conversation content and may include sensitive data";
@@ -377,8 +396,16 @@ public static class ProgramEntry
 
         if (format == "sqlite" || format == "db")
         {
-            response.Headers["X-Token-Dashboard-Export-Warning"] = "SQLite export contains complete conversation content and may include sensitive data";
-            return Results.File(data.Backup(), "application/x-sqlite3", "token-dashboard.sqlite");
+            if (request.IncludeContent && !request.ConfirmIncludeContent)
+            {
+                return Results.BadRequest(new { error = "ConfirmIncludeContent is required for SQLite exports containing conversation content" });
+            }
+
+            response.Headers["X-Token-Dashboard-Export-Warning"] = request.IncludeContent
+                ? "SQLite export contains complete conversation content and may include sensitive data"
+                : "SQLite export is scrubbed by default; conversation content is excluded";
+
+            return Results.File(data.Backup(request.IncludeContent), "application/x-sqlite3", "token-dashboard.sqlite");
         }
 
         return Results.BadRequest(new { error = "format must be csv, json or sqlite" });
