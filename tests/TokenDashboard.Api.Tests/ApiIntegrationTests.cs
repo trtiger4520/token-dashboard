@@ -1,6 +1,7 @@
 using System.Net;
 using System.Globalization;
 using System.Net.Http.Json;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
@@ -18,6 +19,29 @@ namespace TokenDashboard.Api.Tests;
 
 public sealed class ApiIntegrationTests
 {
+    [Theory]
+    [InlineData("--version")]
+    [InlineData("-v")]
+    public void VersionSwitchWritesVersionWithoutStartingTheApplication(string argument)
+    {
+        var originalOutput = Console.Out;
+        using var output = new StringWriter(CultureInfo.InvariantCulture);
+        Console.SetOut(output);
+        try
+        {
+            ProgramEntry.Main([argument]);
+        }
+        finally
+        {
+            Console.SetOut(originalOutput);
+        }
+
+        var expected = typeof(ProgramEntry).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion ?? "0.0.0-development";
+        Assert.Equal(expected, output.ToString().Trim());
+    }
+
     [Fact]
     public async Task HealthIsAnonymousButApiRequiresSessionKey()
     {

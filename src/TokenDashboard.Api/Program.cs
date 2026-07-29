@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Net;
+using System.Reflection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -155,7 +156,29 @@ public static class ProgramEntry
         return app;
     }
 
-    public static void Main(string[] args) => BuildApplication(args).Run();
+    public static void Main(string[] args)
+    {
+        if (TryWriteVersion(args))
+        {
+            return;
+        }
+
+        BuildApplication(args).Run();
+    }
+
+    private static bool TryWriteVersion(string[] args)
+    {
+        if (!args.Any(static argument => string.Equals(argument, "--version", StringComparison.Ordinal) || string.Equals(argument, "-v", StringComparison.Ordinal)))
+        {
+            return false;
+        }
+
+        var version = typeof(ProgramEntry).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion;
+        Console.WriteLine(string.IsNullOrWhiteSpace(version) ? "0.0.0-development" : version);
+        return true;
+    }
 
     private static DateRange Range(HttpRequest request) => DateRangeResolver.Resolve(
         request.Query["preset"].ToString(),

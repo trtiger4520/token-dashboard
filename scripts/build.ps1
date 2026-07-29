@@ -5,10 +5,10 @@ $repositoryRoot = Split-Path -Parent $PSScriptRoot
 
 Push-Location $repositoryRoot
 try {
-    pnpm --dir 'src/TokenDashboard.Web' install --lockfile=false
+    pnpm install --frozen-lockfile
     if ($LASTEXITCODE -ne 0) { throw 'Web dependency installation failed' }
 
-    pnpm --dir 'src/TokenDashboard.Web' build
+    pnpm --filter 'token-dashboard-web' build
     if ($LASTEXITCODE -ne 0) { throw 'Web build failed' }
 
     dotnet restore 'TokenDashboard.slnx'
