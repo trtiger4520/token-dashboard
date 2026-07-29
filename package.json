@@ -2,7 +2,19 @@
   "name": "token-dashboard",
   "private": true,
   "packageManager": "pnpm@11.9.0",
+  "version": "0.0.0-development",
   "engines": {
     "node": ">=24.14.0"
+  },
+  "scripts": {
+    "build:web": "pnpm --filter token-dashboard-web build",
+    "test:web": "pnpm --filter token-dashboard-web test",
+    "release": "semantic-release",
+    "release:resolve": "node scripts/resolve-release-version.mjs"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "21.2.0",
+    "@commitlint/config-conventional": "21.2.0",
+    "semantic-release": "25.0.8"
   }
 }

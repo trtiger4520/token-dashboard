@@ -64,12 +64,6 @@ public sealed class ImportService
         foreach (var item in parse.Events)
         {
             UpsertSource(transaction, item, sourcePath ?? path);
-            if (ExistsEvent(transaction, item.EventFingerprint.Value))
-            {
-                duplicates++;
-                continue;
-            }
-
             if (item.SessionId is not null)
             {
                 UpsertSession(transaction, item, workspaceId, ownerId);
@@ -78,6 +72,12 @@ public sealed class ImportService
             if (item.SessionId is not null && item.TurnId is not null)
             {
                 UpsertTurn(transaction, item);
+            }
+
+            if (ExistsEvent(transaction, item.EventFingerprint.Value))
+            {
+                duplicates++;
+                continue;
             }
 
             InsertSubEvent(transaction, item);
@@ -137,25 +137,27 @@ public sealed class ImportService
     {
         Execute(transaction, """
             INSERT OR IGNORE INTO turns
-                (turn_id, session_id, sequence, occurred_at_utc, source_timezone)
+                (turn_id, session_id, sequence, occurred_at_utc, source_timezone, effort)
             VALUES
-                ($turnId, $sessionId, $sequence, $occurredAtUtc, $sourceTimezone);
+                ($turnId, $sessionId, $sequence, $occurredAtUtc, $sourceTimezone, $effort);
             """,
             ("$turnId", item.TurnId!),
             ("$sessionId", item.SessionId!),
             ("$sequence", item.Sequence),
             ("$occurredAtUtc", Utc(item.OccurredAtUtc)),
-            ("$sourceTimezone", item.SourceTimeZone));
+            ("$sourceTimezone", item.SourceTimeZone),
+            ("$effort", string.IsNullOrWhiteSpace(item.Effort) ? DBNull.Value : item.Effort));
 
         Execute(transaction, """
             INSERT OR IGNORE INTO turns
-                (turn_id, session_id, sequence, occurred_at_utc, source_timezone)
+                (turn_id, session_id, sequence, occurred_at_utc, source_timezone, effort)
             SELECT
                 $turnId,
                 $sessionId,
                 COALESCE(MAX(sequence) + 1, 0),
                 $occurredAtUtc,
-                $sourceTimezone
+                $sourceTimezone,
+                $effort
             FROM turns
             WHERE session_id = $sessionId
               AND NOT EXISTS (SELECT 1 FROM turns WHERE turn_id = $turnId);
@@ -163,7 +165,12 @@ public sealed class ImportService
             ("$turnId", item.TurnId!),
             ("$sessionId", item.SessionId!),
             ("$occurredAtUtc", Utc(item.OccurredAtUtc)),
-            ("$sourceTimezone", item.SourceTimeZone));
+            ("$sourceTimezone", item.SourceTimeZone),
+            ("$effort", string.IsNullOrWhiteSpace(item.Effort) ? DBNull.Value : item.Effort));
+
+        Execute(transaction, "UPDATE turns SET effort = COALESCE(effort, $effort) WHERE turn_id = $turnId AND $effort IS NOT NULL;",
+            ("$turnId", item.TurnId!),
+            ("$effort", string.IsNullOrWhiteSpace(item.Effort) ? DBNull.Value : item.Effort));
     }
 
     private static void InsertSubEvent(SqliteTransaction transaction, NormalizedEvent item)

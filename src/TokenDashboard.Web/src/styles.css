@@ -137,6 +137,10 @@ input::placeholder { color: var(--muted-ink); }
 .panel { border-radius: 0.75rem; }
 .panel-header { min-height: 3.5rem; border-bottom: 1px solid var(--border); padding: 0.75rem 1rem; }
 .panel-header h3 { margin-top: 0.125rem; }
+.panel-header p { margin-top: 0.25rem; color: var(--muted-ink); font-size: 0.75rem; }
+.trend-controls { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.25rem; }
+.trend-controls button { border: 1px solid var(--border); border-radius: 9999px; background: var(--card); padding: 0.3rem 0.5rem; color: var(--muted-ink); font-size: 0.6875rem; }
+.trend-controls button:hover, .trend-controls button.selected { border-color: var(--blue); color: var(--blue); }
 .daily-chart { display: block; width: 100%; height: 10rem; overflow: visible; }
 .chart-wrap { padding: 0.75rem 1rem 0; }
 .chart-rule { stroke: var(--border); stroke-width: 1; }
@@ -145,6 +149,9 @@ input::placeholder { color: var(--muted-ink); }
 .chart-labels { display: grid; grid-template-columns: repeat(7, 1fr); gap: 0.25rem; }
 .chart-labels button { border: 0; background: transparent; color: var(--muted-ink); font-size: 0.6875rem; padding: 0.25rem 0; }
 .chart-labels button:hover, .chart-labels button.selected { color: var(--blue); }
+.trend-labels { display: flex; overflow: hidden; justify-content: space-between; gap: 0.5rem; }
+.trend-labels span { overflow: hidden; min-width: 0; color: var(--muted-ink); font-size: 0.625rem; text-overflow: ellipsis; white-space: nowrap; }
+.panel-empty { padding: 2rem 1rem; color: var(--muted-ink); font-size: 0.75rem; text-align: center; }
 .stat-strip { justify-content: space-between; gap: 0.5rem; margin: 0.75rem 1rem 1rem; border-top: 1px solid var(--border); padding-top: 0.75rem; color: var(--muted-ink); font-size: 0.75rem; }
 .stat-strip b { color: var(--ink); font-family: "JetBrains Mono", monospace; font-weight: 500; }
 .heatmap { display: grid; grid-template-columns: repeat(7, 1fr); gap: 0.375rem; padding: 1rem; }
@@ -160,6 +167,14 @@ input::placeholder { color: var(--muted-ink); }
 .panel-footnote { border-top: 1px solid var(--border); padding: 0.625rem 1rem; color: var(--muted-ink); font-size: 0.6875rem; }
 .discovery-result { display: block; }
 .comparison-panel, .sessions-panel, .timeline-panel, .monthly-panel { margin-bottom: 0.75rem; }
+.treemap-wrap { width: 100%; height: clamp(18rem, min(48vw, 42svh), 30rem); min-height: 0; overflow: hidden; background: var(--sunken); }
+.treemap-chart { display: block; width: 100%; height: 100%; }
+.treemap-node rect { fill: var(--muted); stroke: var(--card); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.treemap-node.treemap-depth-1 rect { fill: var(--card); }
+.treemap-node:hover rect, .treemap-node:focus rect, .treemap-node:focus-within rect { stroke: var(--blue); stroke-width: 2; }
+.treemap-node text { fill: var(--ink); font-size: 10px; pointer-events: none; }
+.treemap-detail { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; border-top: 1px solid var(--border); padding: 0.75rem 1rem; color: var(--muted-ink); font-size: 0.75rem; }
+.treemap-detail strong { color: var(--ink); }
 .table-scroll { overflow-x: auto; }
 table { width: 100%; min-width: 42rem; border-collapse: collapse; font-size: 0.75rem; }
 th, td { border-bottom: 1px solid var(--border); padding: 0.625rem 0.75rem; text-align: left; white-space: nowrap; }
@@ -181,6 +196,8 @@ tbody tr:hover { background: var(--accent); }
 .session-main { flex: 1; flex-direction: column; align-items: flex-start; }
 .session-main strong { overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; font-size: 0.8125rem; }
 .session-main span, .session-meta { color: var(--muted-ink); font-size: 0.75rem; }
+.session-token-summary { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.session-token-summary span { color: var(--ink); font-family: "JetBrains Mono", monospace; font-size: 0.6875rem; }
 .session-meta { flex-wrap: wrap; justify-content: flex-end; }
 .session-meta .mono { color: var(--ink); }
 .timeline-panel .panel-header { align-items: flex-start; }
@@ -267,6 +284,9 @@ code { border: 1px solid var(--border); border-radius: 0.375rem; background: var
 }
 
 @media (max-width: 38rem) {
+  .panel-header { align-items: flex-start; flex-wrap: wrap; gap: 0.5rem; }
+  .trend-controls { width: 100%; justify-content: flex-start; }
+  .session-token-summary { gap: 0.25rem 0.5rem; }
   .topbar-actions { width: 100%; margin-left: 0; }
   .topbar-actions .button-secondary { flex: 1; }
   .rail-section { grid-template-columns: 1fr; }
@@ -325,6 +345,14 @@ code { border: 1px solid var(--border); border-radius: 0.375rem; background: var
 .override-empty { border: 1px dashed var(--border-strong); border-radius: 0.5rem; }
 .pricing-unknown { background: var(--warning-muted); }
 .pricing-unknown > p { margin: 0.5rem 0 1rem; color: var(--muted-ink); font-size: 0.8125rem; }
+.pricing-merge-panel, .pricing-merge-confirm { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: 0 0 1rem; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--card); padding: 0.875rem 1rem; }
+.pricing-merge-panel > div:first-child, .pricing-merge-confirm > div:first-child { display: grid; gap: 0.25rem; }
+.pricing-merge-panel span, .pricing-merge-confirm span { color: var(--muted-ink); font-size: 0.75rem; }
+.pricing-merge-confirm { border-color: var(--blue); background: var(--sheet); }
+.pricing-merge-checkbox { width: 1rem; height: 1rem; accent-color: var(--blue); }
+.pricing-suggestion-cell { display: grid; gap: 0.25rem; min-width: 18rem; white-space: normal !important; }
+.pricing-suggestion-cell strong { color: var(--blue); }
+.pricing-suggestion-cell span { color: var(--muted-ink); font-size: 0.6875rem; line-height: 1.35; }
 .pricing-editor .section-heading-row, .pricing-overrides .section-heading-row, .pricing-unknown .section-heading-row { margin-bottom: 1rem; }
 .pricing-editor .section-heading-row > div, .pricing-overrides .section-heading-row > div, .pricing-unknown .section-heading-row > div { display: grid; gap: 0.375rem; }
 .pricing-editor .form-grid { margin-bottom: 1rem; }
@@ -347,6 +375,7 @@ code { border: 1px solid var(--border); border-radius: 0.375rem; background: var
   .pricing-summary strong { font-size: 1.375rem; }
   .pricing-toolbar, .pricing-unknown, .pricing-editor, .pricing-overrides { padding: 0.875rem; }
   .pricing-toolbar-heading { align-items: start; flex-direction: column; }
+  .pricing-merge-panel, .pricing-merge-confirm { align-items: stretch; flex-direction: column; }
   .pricing-filters { grid-template-columns: 1fr; }
   .pricing-search { grid-column: auto; }
   .pricing-editor .section-heading-row, .pricing-overrides .section-heading-row, .pricing-unknown .section-heading-row { align-items: start; flex-direction: column; }

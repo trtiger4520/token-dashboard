@@ -40,6 +40,11 @@ export interface DailyStat {
   cacheHitRate: number | null
 }
 
+export interface TrendPoint extends DailyStat {
+  bucketStartUtc: string
+  bucketEndUtc: string
+}
+
 export interface ComparisonRow {
   name: string
   kind: 'model' | 'tool'
@@ -51,6 +56,19 @@ export interface ComparisonRow {
   averageTokens: number
   costUsd: number | null
   cacheHitRate: number | null
+}
+
+export interface ComparisonTreeNode {
+  name: string
+  kind: 'model' | 'tool'
+  tokens: number
+  eventCount: number
+  turnCount: number
+  uniqueSessionCount: number
+  costUsd: number | null
+  partialCostUsd: number
+  cacheHitRate: number | null
+  children: ComparisonTreeNode[]
 }
 
 export interface TimelineEvent {
@@ -69,6 +87,7 @@ export interface TurnRecord {
   id: string
   number: number
   model: string
+  effort: string | null
   tokens: TokenBreakdown
   events: TimelineEvent[]
 }
@@ -79,6 +98,9 @@ export interface SessionRecord {
   source: string
   tool: string
   model: string
+  effort: string | null
+  additionalModelCount: number
+  additionalEffortCount: number
   startedAt: string
   endedAt: string
   tokens: TokenBreakdown
@@ -108,10 +130,12 @@ export interface DashboardData {
   tools: string[]
   models: string[]
   tokenTypes: TokenType[]
+  trend: TrendPoint[]
   daily: DailyStat[]
   monthly: DailyStat[]
   heatmap: DailyStat[]
   comparisons: ComparisonRow[]
+  comparisonTree: ComparisonTreeNode[]
   sessions: SessionRecord[]
   capabilities: string[]
   tags: TagRecord[]
@@ -133,6 +157,7 @@ export interface DashboardQuery {
   tool?: string
   model?: string
   tokenType?: string
+  trendInterval?: string
 }
 
 export interface CapabilityRecord {
@@ -168,6 +193,20 @@ export interface UnknownPricing {
   earliestEventUtc: string
   latestEventUtc: string
   tokenCount: number
+  suggestion: PricingSuggestion | null
+}
+
+export interface PricingSuggestion {
+  catalogModel: string
+  catalogMode: string
+  catalogTokenType: string
+  minimumInputTokens: number
+  maximumInputTokens: number | null
+  usdPerMillionTokens: number
+  effectiveFrom: string
+  sourceName: string
+  sourceUrl: string
+  reason: string
 }
 
 export interface SearchResult {
@@ -191,6 +230,27 @@ export function tokenValue(tokens: TokenBreakdown, ...aliases: string[]): number
 
 export function formatNumber(value: number): string {
   return new Intl.NumberFormat('en-US').format(value)
+}
+
+export function formatTokenCount(value: number): string {
+  const absolute = Math.abs(value)
+  if (absolute < 1_000) return formatNumber(value)
+  const divisor = absolute >= 1_000_000 ? 1_000_000 : 1_000
+  const suffix = divisor === 1_000_000 ? 'm' : 'k'
+  const compact = (value / divisor).toFixed(1).replace(/\.0$/, '')
+  return `${compact}${suffix}`
+}
+
+export function inputTokenCount(tokens: TokenBreakdown): number {
+  return tokenValue(tokens, 'input', 'cacheable-input')
+}
+
+export function outputTokenCount(tokens: TokenBreakdown): number {
+  return tokenValue(tokens, 'output', 'reasoning')
+}
+
+export function cacheTokenCount(tokens: TokenBreakdown): number {
+  return Object.entries(tokens).reduce((sum, [key, value]) => /cache/i.test(key) ? sum + value : sum, 0)
 }
 
 export function formatUsd(value: number | null): string {
@@ -232,10 +292,12 @@ export function createEmptyDashboardData(): DashboardData {
     tools: [],
     models: [],
     tokenTypes: ['input', 'output', 'cache-read', 'cache-write'],
+    trend: [],
     daily: [],
     monthly: [],
     heatmap: [],
     comparisons: [],
+    comparisonTree: [],
     sessions: [],
     tags: [],
     capabilities: [],

@@ -1,4 +1,4 @@
-import type { CapabilityRecord, ComparisonRow, DashboardData, DashboardQuery, DailyStat, PricingEntry, SearchResult, SessionRecord, TagRecord, TimelineEvent, TokenBreakdown, TurnRecord, OverviewStat } from './types'
+import type { CapabilityRecord, ComparisonRow, ComparisonTreeNode, DashboardData, DashboardQuery, DailyStat, PricingEntry, SearchResult, SessionRecord, TagRecord, TimelineEvent, TokenBreakdown, TurnRecord, OverviewStat, TrendPoint } from './types'
 
 type JsonRecord = Record<string, unknown>
 
@@ -106,6 +106,7 @@ function queryString(query: DashboardQuery): string {
   if (query.tool) params.set('tool', query.tool)
   if (query.model) params.set('model', query.model)
   if (query.tokenType) params.set('tokenType', query.tokenType)
+  if (query.trendInterval) params.set('interval', query.trendInterval)
   return params.toString()
 }
 
@@ -166,6 +167,15 @@ function normalizeDaily(row: JsonRecord): DailyStat {
   }
 }
 
+function normalizeTrend(row: JsonRecord): TrendPoint {
+  const daily = normalizeDaily(row)
+  return {
+    ...daily,
+    bucketStartUtc: stringValue(row, 'bucketStartUtc', 'bucket_start_utc'),
+    bucketEndUtc: stringValue(row, 'bucketEndUtc', 'bucket_end_utc')
+  }
+}
+
 function normalizeComparison(row: JsonRecord, kind: ComparisonRow['kind']): ComparisonRow {
   const tokenCounts = rowTokenCounts(row)
   const tokens = sumTokenCounts(tokenCounts)
@@ -183,6 +193,24 @@ function normalizeComparison(row: JsonRecord, kind: ComparisonRow['kind']): Comp
     averageTokens: uniqueSessionCount ? Math.round(tokens / uniqueSessionCount) : 0,
     costUsd: nullableNumber(row, 'costUsd', 'cost_usd'),
     cacheHitRate: nullableNumber(row, 'cacheHitRate', 'cache_hit_rate')
+  }
+}
+
+function normalizeComparisonTree(row: JsonRecord): ComparisonTreeNode {
+  const tokenCounts = rowTokenCounts(row)
+  const tokens = sumTokenCounts(tokenCounts)
+  const kind = stringValue(row, 'kind') === 'tool' ? 'tool' : 'model'
+  return {
+    name: stringValue(row, 'name', 'key') || '模型未提供',
+    kind,
+    tokens,
+    eventCount: numberValue(row, 'eventCount', 'event_count'),
+    turnCount: numberValue(row, 'turnCount', 'turn_count'),
+    uniqueSessionCount: numberValue(row, 'uniqueSessionCount', 'unique_session_count'),
+    costUsd: nullableNumber(row, 'costUsd', 'cost_usd'),
+    partialCostUsd: numberValue(row, 'partialCostUsd', 'partial_cost_usd'),
+    cacheHitRate: nullableNumber(row, 'cacheHitRate', 'cache_hit_rate'),
+    children: records(row.children).map(normalizeComparisonTree)
   }
 }
 
@@ -224,6 +252,7 @@ function normalizeTurn(row: JsonRecord, index: number): TurnRecord {
     id: stringValue(row, 'id', 'turn_id', 'turnId') || `turn-${index + 1}`,
     number: numberValue(row, 'sequence') || index + 1,
     model: events.find((event) => event.model)?.model ?? '',
+    effort: nullableString(row, 'effort'),
     tokens: tokenBreakdown(row.tokenUsage ?? row.token_usage),
     events
   }
@@ -233,12 +262,19 @@ function normalizeSession(summary: JsonRecord, detail: JsonRecord | undefined): 
   const detailSession = detail?.session as JsonRecord | undefined
   const turns = records(detail?.turns).map(normalizeTurn)
   const firstEvent = turns.flatMap((turn) => turn.events)[0]
+  const firstPrompt = turns.flatMap((turn) => turn.events).find((event) => event.kind === 'prompt')
+  const knownModels = [...new Set(turns.flatMap((turn) => turn.events).map((event) => event.model).filter(Boolean))]
+  const firstPromptTurn = turns.find((turn) => turn.events.some((event) => event.kind === 'prompt'))
+  const knownEfforts = [...new Set(turns.map((turn) => turn.effort).filter((effort): effort is string => Boolean(effort)))]
   return {
     id: stringValue(summary, 'id', 'sessionId', 'session_id') || stringValue(detailSession, 'session_id', 'id'),
     title: stringValue(summary, 'title') || `Session ${stringValue(summary, 'id', 'sessionId', 'session_id').slice(0, 8)}`,
     source: stringValue(summary, 'sourceId', 'source_id') || stringValue(detailSession, 'source_id'),
     tool: turns.flatMap((turn) => turn.events).find((event) => event.tool)?.tool ?? (firstEvent?.kind === 'tool' ? firstEvent.summary : ''),
-    model: turns[0]?.model || '',
+    model: firstPrompt?.model || '',
+    effort: firstPromptTurn?.effort ?? null,
+    additionalModelCount: firstPrompt?.model ? Math.max(0, knownModels.length - 1) : 0,
+    additionalEffortCount: firstPromptTurn?.effort ? Math.max(0, knownEfforts.length - 1) : 0,
     startedAt: stringValue(summary, 'startedAtUtc', 'started_at_utc') || stringValue(detailSession, 'started_at_utc'),
     endedAt: stringValue(summary, 'endedAtUtc', 'ended_at_utc', 'lastActivityAtUtc', 'last_activity_at_utc') || stringValue(detailSession, 'last_activity_at_utc'),
     tokens: turns.reduce<TokenBreakdown>((total, turn) => {
@@ -368,12 +404,11 @@ export class TokenDashboardClient {
 
   async getDashboard(query: DashboardQuery): Promise<DashboardData> {
     const range = queryString(query)
-    const [overview, daily, monthly, modelComparisons, toolComparisons, heatmap, sessionRows, capabilities, pricing, tagPayload] = await Promise.all([
+    const [overview, trend, monthly, comparisonTree, heatmap, sessionRows, capabilities, pricing, tagPayload] = await Promise.all([
       this.json<JsonRecord>(`/api/overview?${range}`),
-      this.json<unknown[]>(`/api/usage/daily?${range}`),
+      this.json<unknown[]>(`/api/usage/trend?${range}`),
       this.json<unknown[]>(`/api/usage/monthly?${range}`),
-      this.json<unknown[]>(`/api/comparisons?${range}&groupBy=model`),
-      this.json<unknown[]>(`/api/comparisons?${range}&groupBy=tool`),
+      this.json<unknown[]>(`/api/comparisons/tree?${range}`),
       this.json<unknown[]>(`/api/heatmap?${range}`),
       this.json<unknown[]>(`/api/sessions?${range}`),
       this.json<unknown[]>(`/api/sources/capabilities?${range}`),
@@ -383,10 +418,19 @@ export class TokenDashboardClient {
     const summaries = records(sessionRows)
     const details = await Promise.all(summaries.map((summary) => this.json<JsonRecord>(`/api/sessions/${encodeURIComponent(stringValue(summary, 'id', 'sessionId', 'session_id'))}`)))
     const normalizedSessions = summaries.map((summary, index) => normalizeSession(summary, details[index]))
-    const normalizedComparisons = [
-      ...records(modelComparisons).map((row) => normalizeComparison(row, 'model')),
-      ...records(toolComparisons).map((row) => normalizeComparison(row, 'tool'))
-    ]
+    const normalizedTree = records(comparisonTree).map(normalizeComparisonTree)
+    const normalizedComparisons = normalizedTree.map((row) => ({
+      name: row.name,
+      kind: 'model' as const,
+      tokens: row.tokens,
+      eventCount: row.eventCount,
+      turnCount: row.turnCount,
+      uniqueSessionCount: row.uniqueSessionCount,
+      sessions: row.uniqueSessionCount,
+      averageTokens: row.uniqueSessionCount ? Math.round(row.tokens / row.uniqueSessionCount) : 0,
+      costUsd: row.costUsd,
+      cacheHitRate: row.cacheHitRate
+    }))
     const normalizedCapabilities = records(capabilities).map(normalizeCapability)
     const pricingEntries = records(pricing.entries).map(normalizePricing)
     const normalizedTags = normalizeTags(tagPayload)
@@ -403,13 +447,15 @@ export class TokenDashboardClient {
       generatedAt: new Date().toISOString(),
       overview: normalizedOverview,
       sources: [...new Set(normalizedSessions.map((session) => session.source).filter(Boolean))],
-      tools: [...new Set(normalizedComparisons.filter((row) => row.kind === 'tool').map((row) => row.name).filter(Boolean))],
-      models: [...new Set(normalizedComparisons.filter((row) => row.kind === 'model').map((row) => row.name).filter(Boolean))],
+      tools: [...new Set(normalizedTree.flatMap((row) => row.children.map((child) => child.name)).filter(Boolean))],
+      models: [...new Set(normalizedTree.map((row) => row.name).filter(Boolean))],
       tokenTypes,
-      daily: records(daily).map(normalizeDaily),
+      trend: records(trend).map(normalizeTrend),
+      daily: [],
       monthly: records(monthly).map(normalizeDaily),
       heatmap: records(heatmap).map(normalizeDaily),
       comparisons: normalizedComparisons,
+      comparisonTree: normalizedTree,
       sessions: normalizedSessions,
       tags: normalizedTags,
       capabilities: normalizedCapabilities.map((item) => `${item.adapterKind}: ${item.status} · ${item.formats.join(', ')}`),

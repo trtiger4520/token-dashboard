@@ -4,7 +4,7 @@ namespace TokenDashboard.Data;
 
 public sealed class SchemaMigrator
 {
-    public const int CurrentVersion = 5;
+    public const int CurrentVersion = 6;
 
     public static void Migrate(SqliteConnection connection)
     {
@@ -31,7 +31,7 @@ public sealed class SchemaMigrator
         if (version == 0)
         {
             ApplyLatestSchema(transaction);
-            Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) VALUES (5, $appliedAtUtc);", ("$appliedAtUtc", UtcNow()));
+            Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) VALUES (6, $appliedAtUtc);", ("$appliedAtUtc", UtcNow()));
         }
         else
         {
@@ -59,6 +59,13 @@ public sealed class SchemaMigrator
             {
                 ApplyVersionFive(transaction);
                 Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) VALUES (5, $appliedAtUtc);", ("$appliedAtUtc", UtcNow()));
+                version = 5;
+            }
+
+            if (version < 6)
+            {
+                ApplyVersionSix(transaction);
+                Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) VALUES (6, $appliedAtUtc);", ("$appliedAtUtc", UtcNow()));
             }
         }
 
@@ -97,6 +104,7 @@ public sealed class SchemaMigrator
                 sequence INTEGER NOT NULL,
                 occurred_at_utc TEXT NOT NULL,
                 source_timezone TEXT NOT NULL,
+                effort TEXT,
                 FOREIGN KEY (session_id) REFERENCES sessions (session_id) ON DELETE CASCADE,
                 UNIQUE (session_id, sequence)
             );
@@ -300,6 +308,14 @@ public sealed class SchemaMigrator
         AddColumnIfMissing(transaction, "price_versions", "source_kind", "TEXT NOT NULL DEFAULT 'local-override'");
         Execute(transaction, "UPDATE price_versions SET override_version = 1 WHERE override_version IS NULL OR override_version < 1;");
         Execute(transaction, "UPDATE price_versions SET created_at_utc = effective_from_utc WHERE created_at_utc = '';");
+    }
+
+    private static void ApplyVersionSix(SqliteTransaction transaction)
+    {
+        if (TableExists(transaction, "turns"))
+        {
+            AddColumnIfMissing(transaction, "turns", "effort", "TEXT");
+        }
     }
 
     private static void AddColumnIfMissing(SqliteTransaction transaction, string columnName, string definition)

@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Net;
+using System.Reflection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -65,9 +66,16 @@ public static class ProgramEntry
 
         app.MapGet("/api/overview", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Overview(Range(request), Filter(request))));
         app.MapGet("/api/usage/daily", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Daily(Range(request), Filter(request))));
+        app.MapGet("/api/usage/trend", (HttpRequest request, DashboardReadService dashboard) =>
+        {
+            return dashboard.TryTrend(Range(request), request.Query["interval"].ToString(), Filter(request), out var points)
+                ? Results.Ok(points)
+                : Results.BadRequest(new { error = "interval must be one of 15m, 30m, 1h, 3h, 6h, 1d or 3d" });
+        });
         app.MapGet("/api/usage/monthly", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Monthly(Range(request), Filter(request))));
         app.MapGet("/api/heatmap", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Heatmap(Range(request), Filter(request))));
         app.MapGet("/api/comparisons", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Comparisons(Range(request), request.Query["groupBy"].ToString(), Filter(request))));
+        app.MapGet("/api/comparisons/tree", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.ComparisonTree(Range(request), Filter(request))));
         app.MapGet("/api/sessions", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Sessions(Range(request), Filter(request))));
         app.MapGet("/api/sessions/{sessionId}", (HttpRequest request, string sessionId, DashboardReadService dashboard) =>
             dashboard.Session(sessionId, string.Equals(request.Query["reveal"], "true", StringComparison.OrdinalIgnoreCase) || string.Equals(request.Query["includeContent"], "true", StringComparison.OrdinalIgnoreCase) || string.Equals(request.Query["showContent"], "true", StringComparison.OrdinalIgnoreCase)) is { } session
@@ -148,7 +156,29 @@ public static class ProgramEntry
         return app;
     }
 
-    public static void Main(string[] args) => BuildApplication(args).Run();
+    public static void Main(string[] args)
+    {
+        if (TryWriteVersion(args))
+        {
+            return;
+        }
+
+        BuildApplication(args).Run();
+    }
+
+    private static bool TryWriteVersion(string[] args)
+    {
+        if (!args.Any(static argument => string.Equals(argument, "--version", StringComparison.Ordinal) || string.Equals(argument, "-v", StringComparison.Ordinal)))
+        {
+            return false;
+        }
+
+        var version = typeof(ProgramEntry).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion;
+        Console.WriteLine(string.IsNullOrWhiteSpace(version) ? "0.0.0-development" : version);
+        return true;
+    }
 
     private static DateRange Range(HttpRequest request) => DateRangeResolver.Resolve(
         request.Query["preset"].ToString(),
