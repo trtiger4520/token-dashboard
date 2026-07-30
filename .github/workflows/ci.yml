@@ -68,18 +68,17 @@ jobs:
       matrix:
         include:
           - os: windows-2025
-            shell: pwsh
-            command: ./scripts/install.ps1 -Help
           - os: ubuntu-24.04
-            shell: bash
-            command: bash scripts/install.sh --help
-          - os: macos-15-intel
-            shell: bash
-            command: bash scripts/install.sh --help
+          - os: macos-15
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Validate installer command line
-        shell: ${{ matrix.shell }}
-        run: ${{ matrix.command }}
+      - name: Validate Windows installer command line
+        if: matrix.os == 'windows-2025'
+        shell: pwsh
+        run: ./scripts/install.ps1 -Help
+      - name: Validate POSIX installer command line
+        if: matrix.os != 'windows-2025'
+        shell: bash
+        run: bash scripts/install.sh --help

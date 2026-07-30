@@ -1,5 +1,5 @@
 param(
-    [string[]]$Runtime = @('win-x64', 'linux-x64', 'osx-x64'),
+    [string[]]$Runtime = @('win-x64', 'linux-x64', 'osx-arm64'),
     [string]$Version = '',
     [string]$OutputRoot = 'artifacts/publish'
 )

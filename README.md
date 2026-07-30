@@ -30,7 +30,7 @@ dotnet run --project src/TokenDashboard.Api/TokenDashboard.Api.csproj
 
 完整驗證可執行 `scripts/build.ps1` 或 `bash scripts/build.sh`
 
-發布可執行 `scripts/publish.ps1` 或 `bash scripts/publish.sh`，預設產生 `win-x64`、`linux-x64`、`osx-x64` 的 self-contained 產物
+發布可執行 `scripts/publish.ps1` 或 `bash scripts/publish.sh`，預設產生 `win-x64`、`linux-x64`、`osx-arm64` 的 self-contained 產物
 
 self-contained 產物已包含 .NET runtime，不需要另外安裝 .NET 10
 

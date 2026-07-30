@@ -38,8 +38,8 @@ done
 case "$runtime" in
     win-x64) archive_name='token-dashboard-win-x64.zip' ;;
     linux-x64) archive_name='token-dashboard-linux-x64.tar.gz' ;;
-    osx-x64) archive_name='token-dashboard-osx-x64.tar.gz' ;;
-    *) echo 'Runtime must be win-x64, linux-x64 or osx-x64' >&2; exit 2 ;;
+    osx-arm64) archive_name='token-dashboard-osx-arm64.tar.gz' ;;
+    *) echo 'Runtime must be win-x64, linux-x64 or osx-arm64' >&2; exit 2 ;;
 esac
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
