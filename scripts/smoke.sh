@@ -3,6 +3,7 @@ set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 publish_directory="${1:-$repository_root/artifacts/publish/linux-x64}"
+publish_directory="$(cd "$publish_directory" && pwd)"
 executable="$publish_directory/TokenDashboard.Api"
 if [[ ! -x "$executable" ]]; then
     echo "Published executable was not found: $executable" >&2
