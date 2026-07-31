@@ -160,7 +160,36 @@ export interface DashboardQuery {
   tool?: string
   model?: string
   tokenType?: string
+  projectId?: string
+  tag?: string
   trendInterval?: string
+}
+
+export interface SavedView {
+  name: string
+  query: Pick<DashboardQuery, 'preset' | 'from' | 'to' | 'timeZone' | 'sourceId' | 'tool' | 'model' | 'tokenType' | 'projectId' | 'tag'>
+  trendMetric: 'cost' | 'tokens'
+  trendGranularity: 'daily' | 'weekly' | 'monthly'
+}
+
+export interface Budget {
+  id: string
+  name: string
+  amountUsd: number
+  period: 'daily' | 'monthly' | 'custom' | string
+  fromDate: string
+  toDate: string | null
+  projectId: string | null
+  tag: string | null
+  enabled: boolean
+}
+
+export interface BudgetSummary {
+  budgetId: string
+  spentUsd: number
+  tokens: number
+  costCoverage: number | null
+  percentUsed: number
 }
 
 export interface CapabilityRecord {

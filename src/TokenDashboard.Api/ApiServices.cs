@@ -1015,6 +1015,57 @@ public sealed class DashboardDataService
     }
 }
 
+public sealed class BudgetService
+{
+    private readonly DashboardDataService data;
+
+    public BudgetService(DashboardDataService data) => this.data = data;
+
+    public IReadOnlyList<BudgetDto> List() => data.Query("SELECT budget_id, name, amount_usd, period, from_date, to_date, project_id, tag, enabled FROM budgets ORDER BY name, budget_id;")
+        .Select(ToDto).ToArray();
+
+    public BudgetDto? Get(string id) => data.Query("SELECT budget_id, name, amount_usd, period, from_date, to_date, project_id, tag, enabled FROM budgets WHERE budget_id = $id;", ("$id", id)).Select(ToDto).FirstOrDefault();
+
+    public BudgetDto Create(BudgetRequest request)
+    {
+        var id = Guid.NewGuid().ToString("N");
+        var now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        data.Execute("""
+            INSERT INTO budgets (budget_id, name, amount_usd, period, from_date, to_date, project_id, tag, enabled, created_at_utc, updated_at_utc)
+            VALUES ($id, $name, $amount, $period, $fromDate, $toDate, $projectId, $tag, $enabled, $now, $now);
+            """, ("$id", id), ("$name", request.Name.Trim()), ("$amount", request.AmountUsd.ToString(CultureInfo.InvariantCulture)), ("$period", request.Period.ToLowerInvariant()), ("$fromDate", request.FromDate ?? DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)), ("$toDate", (object?)request.ToDate ?? DBNull.Value), ("$projectId", (object?)request.ProjectId ?? DBNull.Value), ("$tag", (object?)request.Tag ?? DBNull.Value), ("$enabled", request.Enabled ? 1 : 0), ("$now", now));
+        return Get(id)!;
+    }
+
+    public BudgetDto? Update(string id, BudgetRequest request)
+    {
+        if (Get(id) is null) return null;
+        data.Execute("""
+            UPDATE budgets SET name = $name, amount_usd = $amount, period = $period, from_date = $fromDate, to_date = $toDate,
+                project_id = $projectId, tag = $tag, enabled = $enabled, updated_at_utc = $now WHERE budget_id = $id;
+            """, ("$id", id), ("$name", request.Name.Trim()), ("$amount", request.AmountUsd.ToString(CultureInfo.InvariantCulture)), ("$period", request.Period.ToLowerInvariant()), ("$fromDate", request.FromDate ?? DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)), ("$toDate", (object?)request.ToDate ?? DBNull.Value), ("$projectId", (object?)request.ProjectId ?? DBNull.Value), ("$tag", (object?)request.Tag ?? DBNull.Value), ("$enabled", request.Enabled ? 1 : 0), ("$now", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)));
+        return Get(id);
+    }
+
+    public bool Delete(string id)
+    {
+        var before = Get(id) is not null;
+        if (before) data.Execute("DELETE FROM budgets WHERE budget_id = $id;", ("$id", id));
+        return before;
+    }
+
+    private static BudgetDto ToDto(Dictionary<string, object?> row) => new(
+        Convert.ToString(row["budget_id"], CultureInfo.InvariantCulture) ?? string.Empty,
+        Convert.ToString(row["name"], CultureInfo.InvariantCulture) ?? string.Empty,
+        decimal.Parse(Convert.ToString(row["amount_usd"], CultureInfo.InvariantCulture) ?? "0", CultureInfo.InvariantCulture),
+        Convert.ToString(row["period"], CultureInfo.InvariantCulture) ?? "monthly",
+        Convert.ToString(row["from_date"], CultureInfo.InvariantCulture) ?? string.Empty,
+        row["to_date"] is null ? null : Convert.ToString(row["to_date"], CultureInfo.InvariantCulture),
+        row["project_id"] is null ? null : Convert.ToString(row["project_id"], CultureInfo.InvariantCulture),
+        row["tag"] is null ? null : Convert.ToString(row["tag"], CultureInfo.InvariantCulture),
+        Convert.ToInt32(row["enabled"], CultureInfo.InvariantCulture) != 0);
+}
+
 public sealed class PricingService
 {
     private readonly DashboardDataService data;

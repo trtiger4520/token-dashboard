@@ -10,7 +10,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRoute, useRouter } from 'vue-router'
 import { extractStartupKey, TokenDashboardClient, type SourceDiscoveryResult, type SyncRequest } from './api'
 import { isValidDateRange, resolveDateRange, resolveDayRange, type DatePreset } from './dateRange'
-import { cacheTokenCount, createEmptyDashboardData, formatDateLabel, formatNumber, formatTokenCount, formatUsd, inputTokenCount, outputTokenCount, totalTokens, type DashboardData, type DashboardQuery, type EventKind, type PricingEntry, type SearchResult, type SessionRecord, type TagRecord, type TokenType, type TrendPoint, type UnknownPricing } from './types'
+import { cacheTokenCount, createEmptyDashboardData, formatDateLabel, formatNumber, formatTokenCount, formatUsd, inputTokenCount, outputTokenCount, totalTokens, type Budget, type BudgetSummary, type DashboardData, type DashboardQuery, type EventKind, type PricingEntry, type SavedView, type SearchResult, type SessionRecord, type TagRecord, type TokenType, type TrendPoint, type UnknownPricing } from './types'
 import { layoutTreemap, type TreemapRect } from './treemap'
 
 const client = new TokenDashboardClient()
@@ -75,6 +75,21 @@ const selectedDate = ref('')
 const datePreset = ref<DatePreset>('30')
 const dateRange = reactive(resolveDateRange('30'))
 const filters = reactive({ sourceId: 'all', tool: 'all', model: 'all', tokenType: 'all' as TokenType | 'all' })
+const projectFilter = ref('all')
+const tagFilter = ref('all')
+const savedViews = ref<SavedView[]>([])
+const selectedViewName = ref('')
+const viewName = ref('')
+const budgets = ref<Budget[]>([])
+const budgetSummaries = ref<BudgetSummary[]>([])
+const budgetName = ref('')
+const budgetAmount = ref('')
+const budgetPeriod = ref<'daily' | 'monthly' | 'custom'>('monthly')
+const budgetFromDate = ref('')
+const budgetToDate = ref('')
+const budgetProjectId = ref('')
+const budgetTag = ref('')
+const editingBudgetId = ref('')
 type TrendMetric = 'cost' | 'tokens'
 type TrendGranularity = 'daily' | 'weekly' | 'monthly'
 
@@ -89,6 +104,7 @@ const trendGranularity = ref<TrendGranularity>(readDashboardPreference('trend-gr
 const selectedSession = computed<SessionRecord | undefined>(() => data.value.sessions.find((session) => session.id === selectedSessionId.value))
 const selectedEvent = computed(() => selectedSession.value?.turns.flatMap((turn) => turn.events).find((event) => event.id === selectedEventId.value))
 const allTags = computed(() => [...new Set(data.value.tags.map((tag) => tag.key).concat(data.value.sessions.flatMap((session) => session.tags)))].sort())
+const projectOptions = computed(() => [...new Set(data.value.sessions.map((session) => session.workspaceId).filter((value): value is string => Boolean(value)))].sort())
 const visibleSessions = computed(() => [...data.value.sessions].sort((left, right) => (right.partialCostUsd ?? 0) - (left.partialCostUsd ?? 0)))
 const totalTokenCount = computed(() => totalTokens(data.value.overview.tokenCounts))
 const totalCost = computed(() => data.value.overview.costUsd)
@@ -213,6 +229,8 @@ function dashboardQuery(): DashboardQuery {
     tool: filters.tool === 'all' ? undefined : filters.tool,
     model: filters.model === 'all' ? undefined : filters.model,
     tokenType: filters.tokenType === 'all' ? undefined : filters.tokenType,
+    projectId: projectFilter.value === 'all' ? undefined : projectFilter.value,
+    tag: tagFilter.value === 'all' ? undefined : tagFilter.value,
     trendInterval: trendGranularity.value === 'weekly' ? '7d' : '1d'
   }
 }
@@ -355,6 +373,140 @@ function addTag(): void {
   }).catch((error: unknown) => {
     operationMessage.value = error instanceof Error ? error.message : 'tag 儲存失敗'
   })
+}
+
+function currentSavedView(): SavedView {
+  return {
+    name: viewName.value.trim(),
+    query: {
+      preset: datePreset.value === '7' ? '7d' : datePreset.value === '90' ? '90d' : datePreset.value === 'custom' ? 'custom' : datePreset.value,
+      from: dateRange.startDate,
+      to: dateRange.endDate,
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+      sourceId: filters.sourceId === 'all' ? undefined : filters.sourceId,
+      tool: filters.tool === 'all' ? undefined : filters.tool,
+      model: filters.model === 'all' ? undefined : filters.model,
+      tokenType: filters.tokenType === 'all' ? undefined : filters.tokenType,
+      projectId: projectFilter.value === 'all' ? undefined : projectFilter.value,
+      tag: tagFilter.value === 'all' ? undefined : tagFilter.value
+    },
+    trendMetric: trendMetric.value,
+    trendGranularity: trendGranularity.value
+  }
+}
+
+function persistSavedViews(): void {
+  window.localStorage.setItem('token-dashboard.saved-views', JSON.stringify(savedViews.value))
+}
+
+function saveView(overwrite = false): void {
+  const next = currentSavedView()
+  if (!next.name) {
+    operationMessage.value = '請提供檢視名稱'
+    return
+  }
+  const existing = savedViews.value.findIndex((view) => view.name === next.name)
+  if (existing >= 0 && !overwrite) {
+    operationMessage.value = '檢視名稱已存在，請選擇覆寫'
+    return
+  }
+  if (existing >= 0) savedViews.value.splice(existing, 1, next)
+  else savedViews.value.push(next)
+  persistSavedViews()
+  selectedViewName.value = next.name
+  operationMessage.value = existing >= 0 ? `檢視「${next.name}」已覆寫` : `檢視「${next.name}」已建立`
+}
+
+function applySavedView(view: SavedView | undefined): void {
+  if (!view) return
+  const query = view.query
+  datePreset.value = query.preset === '7d' ? '7' : query.preset === '90d' ? '90' : query.preset === 'custom' ? 'custom' : query.preset as DatePreset
+  dateRange.startDate = query.from
+  dateRange.endDate = query.to
+  filters.sourceId = query.sourceId ?? 'all'
+  filters.tool = query.tool ?? 'all'
+  filters.model = query.model ?? 'all'
+  filters.tokenType = (query.tokenType ?? 'all') as TokenType | 'all'
+  projectFilter.value = query.projectId ?? 'all'
+  tagFilter.value = query.tag ?? 'all'
+  trendMetric.value = view.trendMetric
+  trendGranularity.value = view.trendGranularity
+  selectedViewName.value = view.name
+  viewName.value = view.name
+  void refresh()
+}
+
+function deleteSavedView(name: string): void {
+  savedViews.value = savedViews.value.filter((view) => view.name !== name)
+  persistSavedViews()
+  if (selectedViewName.value === name) selectedViewName.value = ''
+  operationMessage.value = `檢視「${name}」已刪除`
+}
+
+function loadSavedViews(): void {
+  const raw = window.localStorage.getItem('token-dashboard.saved-views')
+  if (!raw) return
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) throw new Error('invalid saved views')
+    savedViews.value = parsed.filter((view): view is SavedView => view && typeof view.name === 'string' && view.query && typeof view.query.from === 'string')
+  } catch {
+    savedViews.value = []
+    window.localStorage.removeItem('token-dashboard.saved-views')
+    operationMessage.value = '已清除損毀的檢視設定'
+  }
+}
+
+function editBudget(budget: Budget): void {
+  editingBudgetId.value = budget.id
+  budgetName.value = budget.name
+  budgetAmount.value = String(budget.amountUsd)
+  budgetPeriod.value = budget.period === 'daily' || budget.period === 'custom' ? budget.period : 'monthly'
+  budgetFromDate.value = budget.fromDate
+  budgetToDate.value = budget.toDate ?? ''
+  budgetProjectId.value = budget.projectId ?? ''
+  budgetTag.value = budget.tag ?? ''
+}
+
+function resetBudgetForm(): void {
+  editingBudgetId.value = ''
+  budgetName.value = ''
+  budgetAmount.value = ''
+  budgetPeriod.value = 'monthly'
+  budgetFromDate.value = ''
+  budgetToDate.value = ''
+  budgetProjectId.value = ''
+  budgetTag.value = ''
+}
+
+async function saveBudget(): Promise<void> {
+  const name = budgetName.value.trim()
+  const amountUsd = Number(budgetAmount.value)
+  if (!name || !Number.isFinite(amountUsd) || amountUsd <= 0) {
+    operationMessage.value = '請提供有效的預算名稱與金額'
+    return
+  }
+  await client.saveBudget({ id: editingBudgetId.value || undefined, name, amountUsd, period: budgetPeriod.value, fromDate: budgetFromDate.value || dateRange.startDate, toDate: budgetToDate.value || null, projectId: budgetProjectId.value || null, tag: budgetTag.value || null, enabled: true })
+  operationMessage.value = editingBudgetId.value ? '預算已更新' : '預算已建立'
+  resetBudgetForm()
+  await loadBudgets()
+}
+
+async function loadBudgets(): Promise<void> {
+  try {
+    const query = dashboardQuery()
+    budgets.value = await client.getBudgets(query)
+    budgetSummaries.value = await client.getBudgetSummaries(query)
+  } catch {
+    budgets.value = []
+    budgetSummaries.value = []
+  }
+}
+
+async function removeBudget(id: string): Promise<void> {
+  await client.deleteBudget(id)
+  operationMessage.value = '預算已刪除'
+  await loadBudgets()
 }
 
 function removeTag(tag: string): void {
@@ -596,7 +748,8 @@ onMounted(() => {
     syncState.value = 'error'
     return
   }
-  void refresh()
+  loadSavedViews()
+  void refresh().then(() => loadBudgets())
 })
 
 watch(treemapContainer, async (container, previousContainer) => {
@@ -693,6 +846,29 @@ onBeforeUnmount(() => {
           <label>工具<select v-model="filters.tool" @change="void refresh()"><option value="all">App / CLI</option><option v-for="tool in data.tools" :key="tool" :value="tool">{{ tool }}</option></select></label>
           <label>模型<select v-model="filters.model" @change="void refresh()"><option value="all">全部模型</option><option v-for="model in data.models" :key="model" :value="model">{{ model }}</option></select></label>
           <label>Token type<select v-model="filters.tokenType" @change="void refresh()"><option value="all">全部 token</option><option v-for="tokenType in data.tokenTypes" :key="tokenType" :value="tokenType">{{ tokenType }}</option></select></label>
+          <label>專案<select v-model="projectFilter" @change="void refresh()"><option value="all">全部專案</option><option v-for="project in projectOptions" :key="project" :value="project">{{ project }}</option></select></label>
+          <label>標籤<select v-model="tagFilter" @change="void refresh()"><option value="all">全部標籤</option><option v-for="tag in allTags" :key="tag" :value="tag">{{ tag }}</option></select></label>
+        </section>
+
+        <section class="rail-section" aria-labelledby="views-heading">
+          <h2 id="views-heading" class="section-label">具名檢視</h2>
+          <label>檢視名稱<input v-model="viewName" placeholder="例如 本週 review" /></label>
+          <div class="button-row"><button class="button button-primary" type="button" @click="saveView(false)">建立檢視</button><button class="button button-secondary" type="button" :disabled="!viewName.trim()" @click="saveView(true)">覆寫</button></div>
+          <label v-if="savedViews.length">套用檢視<select v-model="selectedViewName" @change="applySavedView(savedViews.find((view) => view.name === selectedViewName)!)"><option value="">選擇檢視</option><option v-for="view in savedViews" :key="view.name" :value="view.name">{{ view.name }}</option></select></label>
+          <div v-if="savedViews.length" class="tag-assignment-list"><div v-for="view in savedViews" :key="view.name" class="tag-assignment"><span>{{ view.name }}</span><button type="button" :aria-label="`刪除檢視 ${view.name}`" @click="deleteSavedView(view.name)">刪除</button></div></div>
+          <p class="rail-note">檢視設定儲存在本機；損毀資料會自動清除</p>
+        </section>
+
+        <section class="rail-section" aria-labelledby="budget-heading">
+          <h2 id="budget-heading" class="section-label">預算管理</h2>
+          <label>名稱<input v-model="budgetName" placeholder="例如 產品線月預算" /></label>
+          <label>金額 USD<input v-model="budgetAmount" inputmode="decimal" placeholder="100" /></label>
+          <label>週期<select v-model="budgetPeriod"><option value="monthly">每月</option><option value="daily">每日</option><option value="custom">自訂</option></select></label>
+          <div class="date-fields"><label>開始<input v-model="budgetFromDate" type="date" /></label><label>結束<input v-model="budgetToDate" type="date" /></label></div>
+          <label>專案（可選）<input v-model="budgetProjectId" placeholder="workspace / project id" /></label>
+          <label>標籤（可選）<input v-model="budgetTag" placeholder="review" /></label>
+          <div class="button-row"><button class="button button-primary" type="button" @click="void saveBudget()">{{ editingBudgetId ? '更新預算' : '建立預算' }}</button><button v-if="editingBudgetId" class="button button-secondary" type="button" @click="resetBudgetForm">取消</button></div>
+          <div v-if="budgets.length" class="tag-assignment-list"><div v-for="budget in budgets" :key="budget.id" class="tag-assignment"><span><strong>{{ budget.name }}</strong><small class="mono"> {{ formatUsd(budget.amountUsd) }}</small></span><span class="button-row"><button type="button" @click="editBudget(budget)">編輯</button><button type="button" @click="void removeBudget(budget.id)">刪除</button></span></div></div>
         </section>
 
         <section class="rail-section" aria-labelledby="source-heading">
@@ -740,8 +916,8 @@ onBeforeUnmount(() => {
 
           <section class="panel sessions-panel" aria-labelledby="sessions-heading"><div class="panel-header"><div><span class="eyebrow">工作階段費用</span><h3 id="sessions-heading">依工作階段追查費用與 Token</h3><p>依已知費用排序；部分定價資料會顯示已知費用與覆蓋率</p></div><div class="search-control"><label class="sr-only" for="full-search">搜尋工作階段、Turn、提示、回應或工具</label><input id="full-search" v-model="searchTerm" type="search" placeholder="搜尋工作階段、提示或工具" @input="void runSearch()" /><kbd>Ctrl K</kbd></div></div><div v-if="searchTerm" class="search-results" aria-live="polite"><span class="eyebrow">搜尋結果</span><span>{{ searchError || `${searchResults.length} 筆相符` }}</span><button v-for="result in searchResults" :key="result.itemId" class="result-link" type="button" @click="result.sessionId && selectSession(data.sessions.find((session) => session.id === result.sessionId)!)">{{ result.title }}</button></div><div class="session-list"><button v-for="session in visibleSessions" :key="session.id" class="session-row" :class="{ selected: selectedSessionId === session.id }" type="button" @click="selectSession(session)"><span class="session-main"><strong>{{ session.workspaceId || session.title }}</strong><span>{{ formatSessionStartedAt(session.startedAt) }} · {{ session.source }} · {{ session.model || '模型未提供' }}<template v-if="session.additionalModelCount"> · + {{ session.additionalModelCount }} 個模型</template><template v-if="session.effort"> · 推理強度 {{ session.effort }}<template v-if="session.additionalEffortCount"> · + {{ session.additionalEffortCount }} 種設定</template></template></span><span class="session-token-summary"><span :title="tokenTitle(inputTokenCount(session.tokens))">輸入 {{ formatTokenCount(inputTokenCount(session.tokens)) }}</span><span :title="tokenTitle(outputTokenCount(session.tokens))">輸出 {{ formatTokenCount(outputTokenCount(session.tokens)) }}</span><span :title="tokenTitle(cacheTokenCount(session.tokens))">快取 {{ formatTokenCount(cacheTokenCount(session.tokens)) }}</span><span :title="tokenTitle(totalTokens(session.tokens))">合計 {{ formatTokenCount(totalTokens(session.tokens)) }}</span></span></span><span class="session-meta"><span>{{ eventCount(session) }} 筆事件</span><span class="mono" :class="{ unknown: session.costUsd === null }" :title="sessionCostLabel(session)">{{ sessionCostLabel(session) }}</span></span></button></div></section>
 
-          <section v-if="selectedSession" class="panel timeline-panel" aria-labelledby="timeline-heading"><div class="panel-header"><div><span class="eyebrow">工作階段 · Turn · 事件</span><h3 id="timeline-heading">{{ selectedSession.title }}</h3><p>{{ selectedSession.startedAt }} — {{ selectedSession.endedAt }} · {{ selectedSession.source }} · {{ selectedSession.model || '模型未提供' }}</p></div><div class="tag-list"><span v-for="tag in selectedSession.tags" :key="tag" class="tag">{{ tag }} <button type="button" :aria-label="`移除標籤 ${tag}`" @click="removeTag(tag)">移除</button></span></div></div><div class="timeline"><div v-for="turn in selectedSession.turns" :key="turn.id" class="turn-block"><div class="turn-label"><span class="turn-number">{{ turn.number }}</span><span>第 {{ turn.number }} 個 Turn</span><span class="mono">{{ formatTokenCount(totalTokens(turn.tokens)) }} Token</span></div><div class="event-list"><button v-for="event in turn.events" :key="event.id" class="event-row" :class="[eventClass(event.kind), { selected: selectedEventId === event.id }]" type="button" @click="selectedEventId = event.id"><span class="event-kind">{{ event.label }}</span><span class="event-summary">{{ event.summary }}</span><span class="mono">{{ event.tokens ? formatTokenCount(event.tokens) : '—' }}</span></button></div></div></div><div v-if="selectedEvent" class="event-detail"><span class="eyebrow">事件明細</span><strong>{{ selectedEvent.label }} · {{ selectedEvent.timestamp }}</strong><p>{{ selectedEvent.detail ?? selectedEvent.summary }}</p><div class="event-reveal-grid"><div v-for="field in (['prompt', 'response', 'payload'] as const)" :key="field" class="event-reveal"><button class="button button-secondary" type="button" @click="void revealEventField(field)">{{ revealedEventFields[`${selectedEvent.id}:${field}`] !== undefined ? `收合 ${field}` : `展開 ${field}` }}</button><span v-if="revealingEventFields[`${selectedEvent.id}:${field}`]">讀取中…</span><pre v-else-if="revealedEventFields[`${selectedEvent.id}:${field}`] !== undefined">{{ revealedEventFields[`${selectedEvent.id}:${field}`] }}</pre></div></div></div><div class="tag-editor"><label for="tag-input">新增標籤<input id="tag-input" v-model="tagInput" placeholder="例如 review" @keyup.enter="addTag" /></label><label>套用範圍<select v-model="tagScope"><option value="session">工作階段</option><option value="project">專案</option><option value="source">來源</option></select></label><label>套用目標<input v-model="tagEntityId" :placeholder="tagScope === 'session' ? selectedSession.id : '來源或專案 ID'" /></label><label>標籤值<input v-model="tagValue" placeholder="可選" /></label><button class="button button-secondary" type="button" @click="addTag">加入</button></div></section>
             <section class="panel monthly-panel" aria-labelledby="monthly-heading"><div class="panel-header"><div><span class="eyebrow">每月彙總</span><h3 id="monthly-heading">每月費用與工作量</h3></div><span class="mono">以 {{ data.overview.timeZoneId }} 劃分月份</span></div><div class="monthly-list"><div v-for="month in data.monthly" :key="month.date" class="monthly-row"><strong>{{ month.date.slice(0, 7) }}</strong><span class="mono">{{ formatTokenCount(month.tokens) }} Token</span><span>{{ month.eventCount }} 筆事件 · {{ month.uniqueSessionCount }} 個工作階段 · {{ month.turnCount }} 個 Turn</span><span class="mono" :class="{ unknown: month.costUsd === null }">{{ formatUsd(month.costUsd) }}</span><span>{{ month.cacheHitRate === null ? '快取資料未知' : `快取命中 ${Math.round(month.cacheHitRate * 100)}%` }}</span></div></div></section>
+            <section v-if="budgets.length" class="panel budget-panel" aria-labelledby="budget-summary-heading"><div class="panel-header"><div><span class="eyebrow">BUDGET MONITOR</span><h3 id="budget-summary-heading">預算使用狀態</h3></div><span class="mono">{{ budgets.length }} 個預算</span></div><div class="monthly-list"><div v-for="budget in budgets" :key="budget.id" class="monthly-row"><strong>{{ budget.name }}</strong><span>{{ budget.period }}</span><span class="mono">{{ formatUsd(budgetSummaries.find((summary) => summary.budgetId === budget.id)?.spentUsd ?? 0) }} / {{ formatUsd(budget.amountUsd) }}</span><span>{{ Math.round(budgetSummaries.find((summary) => summary.budgetId === budget.id)?.percentUsed ?? 0) }}% 已使用</span></div></div></section>
         </template>
       </main>
 
@@ -750,7 +926,7 @@ onBeforeUnmount(() => {
         <nav class="inspector-tabs" aria-label="檢視器分頁"><button v-for="tab in ([['detail', '明細'], ['stats', '定價'], ['capabilities', '功能']] as const)" :key="tab[0]" type="button" :class="{ active: inspectorTab === tab[0] }" @click="inspectorTab = tab[0]">{{ tab[1] }}</button></nav>
          <div v-if="inspectorTab === 'detail'" class="inspector-content"><template v-if="selectedSession"><section class="inspector-section"><span class="eyebrow">Token 明細</span><h3>{{ selectedSession.model || '模型未提供' }}</h3><p v-if="selectedSession.effort" class="mono">推理強度 {{ selectedSession.effort }}</p><dl class="detail-list"><div><dt>輸入</dt><dd class="mono">{{ formatTokenCount(inputTokenCount(selectedSession.tokens)) }}</dd></div><div><dt>輸出</dt><dd class="mono">{{ formatTokenCount(outputTokenCount(selectedSession.tokens)) }}</dd></div><div><dt>快取</dt><dd class="mono">{{ formatTokenCount(cacheTokenCount(selectedSession.tokens)) }}</dd></div><div><dt>合計</dt><dd class="mono">{{ formatTokenCount(totalTokens(selectedSession.tokens)) }}</dd></div><div><dt>已知成本</dt><dd class="mono" :class="{ unknown: selectedSession.costUsd === null }">{{ sessionCostLabel(selectedSession) }}</dd></div><div v-if="selectedSession.costUsd === null"><dt>成本覆蓋率</dt><dd class="mono">{{ costCoverageLabel(selectedSession.costCoverage) }}</dd></div></dl></section><section class="inspector-section"><span class="eyebrow">來源與時間</span><p>{{ selectedSession.source }} · {{ selectedSession.tool }}</p><p class="mono">開始 {{ selectedSession.startedAt }}</p><p class="mono">結束 {{ selectedSession.endedAt }}</p></section></template><div v-else class="inspector-empty">從工作階段費用清單選取資料後，這裡會顯示 Token 明細、已知成本與來源時間</div></div>
         <div v-else-if="inspectorTab === 'stats'" class="inspector-content"><section class="inspector-section"><span class="eyebrow">PRICING VERSION</span><h3>{{ data.pricing.version }}</h3><dl class="detail-list"><div><dt>Effective from</dt><dd class="mono">{{ data.pricing.effectiveFrom }}</dd></div><div><dt>Unknown price</dt><dd class="unknown mono">{{ data.pricing.unknownCount }}</dd></div><div><dt>Overrides</dt><dd class="mono">{{ data.pricing.overrideCount }}</dd></div></dl></section><section class="inspector-section"><span class="eyebrow">PRICE OVERRIDE</span><label>Provider<input v-model="pricingProvider" placeholder="openai" /></label><label>Model<input v-model="pricingModel" placeholder="gpt-5-codex" /></label><label>Token type<select v-model="pricingTokenType"><option v-for="tokenType in data.tokenTypes" :key="tokenType" :value="tokenType">{{ tokenType }}</option></select></label><label>Mode<input v-model="pricingMode" placeholder="standard" /></label><label>USD / MTok<input v-model="pricingAmount" inputmode="decimal" placeholder="3.00" /></label><label>Effective from<input v-model="pricingEffectiveFrom" type="date" /></label><label>Effective to<input v-model="pricingEffectiveTo" type="date" /></label><label>Min input tokens<input v-model="pricingMinimum" inputmode="numeric" /></label><label>Max input tokens<input v-model="pricingMaximum" inputmode="numeric" placeholder="不限" /></label><button class="button button-primary button-full" type="button" @click="void savePricing()">儲存 override</button><p class="rail-note">有效區間採半開區間；未知價格不會被推估</p></section></div>
-        <div v-else class="inspector-content"><section class="inspector-section"><span class="eyebrow">CAPABILITY MAP</span><h3>目前可用能力</h3><ul class="capability-list"><li v-for="capability in data.capabilities" :key="capability">{{ capability }}</li></ul></section><section class="inspector-section"><span class="eyebrow">TAG MANAGEMENT</span><label>Scope<select v-model="tagScope"><option value="session">Session</option><option value="project">Project</option><option value="source">Source</option></select></label><label>Entity target<input v-model="tagEntityId" :placeholder="tagScope === 'session' ? selectedSession?.id ?? 'session-id' : 'source-or-project-id'" /></label><label>Tag key<input id="tag-management-input" v-model="tagInput" placeholder="例如 review" @keyup.enter="addTag" /></label><label>Value<input v-model="tagValue" placeholder="可選值" /></label><button class="button button-secondary" type="button" @click="addTag">新增 tag</button><div class="tag-assignment-list"><div v-for="assignment in data.tags" :key="`${assignment.scope}-${assignment.entityId}-${assignment.id || assignment.key}`" class="tag-assignment"><span class="tag tag-neutral">{{ assignment.key }}<span v-if="assignment.value">={{ assignment.value }}</span></span><span class="mono">{{ assignment.scope }} / {{ assignment.entityId }}</span><button type="button" :aria-label="`刪除 ${assignment.key} tag`" @click="removeAssignment(assignment)">刪除</button></div><span v-if="!data.tags.length" class="rail-note">目前沒有 tag assignment</span></div></section><section class="inspector-section"><span class="eyebrow">TAGS</span><div class="tag-list"><span v-for="tag in allTags" :key="tag" class="tag tag-neutral">{{ tag }}</span></div></section></div>
+        <div v-else class="inspector-content"><section class="inspector-section"><span class="eyebrow">CAPABILITY MAP</span><h3>目前可用能力</h3><ul class="capability-list"><li v-for="capability in data.capabilities" :key="capability">{{ capability }}</li></ul></section><section class="inspector-section"><span class="eyebrow">TAG MANAGEMENT</span><label>Scope<select v-model="tagScope"><option value="session">Session</option><option value="project">Project</option><option value="source">Source</option></select></label><label>Entity target<input v-model="tagEntityId" :placeholder="tagScope === 'session' ? selectedSession?.id ?? 'session-id' : 'source-or-project-id'" /></label><label>Tag key<input id="tag-management-input" v-model="tagInput" placeholder="例如 review" @keyup.enter="addTag" /></label><label>Value<input v-model="tagValue" placeholder="可選值" /></label><button class="button button-secondary" type="button" @click="addTag">新增 tag</button><div class="tag-assignment-list"><div v-for="assignment in data.tags" :key="`${assignment.scope}-${assignment.entityId}-${assignment.id || assignment.key}`" class="tag-assignment"><span class="tag tag-neutral">{{ assignment.key }}<span v-if="assignment.value">={{ assignment.value }}</span></span><span class="mono">{{ assignment.scope }} / {{ assignment.entityId }}</span><button type="button" :aria-label="`刪除 ${assignment.key} tag`" @click="removeAssignment(assignment)">刪除</button></div><span v-if="!data.tags.length" class="rail-note">目前沒有 tag assignment</span></div></section><section class="inspector-section"><span class="eyebrow">TAGS</span><div class="tag-list"><button v-for="tag in allTags" :key="tag" class="tag tag-neutral" type="button" @click="tagFilter = tag; void refresh()">{{ tag }}</button></div></section></div>
         <div class="inspector-footer"><span class="eyebrow">SESSION STORAGE</span><p>Startup fragment key 讀取後立即移除，API 只使用 <code>X-Token-Dashboard-Key</code></p></div>
       </aside>
     </div>

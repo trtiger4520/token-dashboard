@@ -89,7 +89,38 @@ public sealed record DashboardFilter(
     string? SourceId = null,
     string? Tool = null,
     string? Model = null,
-    string? TokenType = null);
+    string? TokenType = null,
+    string? WorkspaceId = null,
+    string? ProjectId = null,
+    string? Tag = null);
+
+public sealed record BudgetRequest(
+    string Name,
+    decimal AmountUsd,
+    string Period = "monthly",
+    string? FromDate = null,
+    string? ToDate = null,
+    string? ProjectId = null,
+    string? Tag = null,
+    bool Enabled = true);
+
+public sealed record BudgetDto(
+    string Id,
+    string Name,
+    decimal AmountUsd,
+    string Period,
+    string FromDate,
+    string? ToDate,
+    string? ProjectId,
+    string? Tag,
+    bool Enabled);
+
+public sealed record BudgetSummaryDto(
+    string BudgetId,
+    decimal SpentUsd,
+    long Tokens,
+    decimal? CostCoverage,
+    decimal PercentUsed);
 
 public sealed record EventRow(
     string Fingerprint,
@@ -109,7 +140,8 @@ public sealed record EventRow(
     string Payload,
     IReadOnlyDictionary<string, long> Tokens,
     string? Mode = null,
-    bool? CacheMetricsReported = null)
+    bool? CacheMetricsReported = null,
+    string? WorkspaceId = null)
 {
     public long InputTokens => Tokens.Where(static pair => TokenTypeNormalizer.IsCacheableInput(pair.Key)).Sum(static pair => pair.Value);
 

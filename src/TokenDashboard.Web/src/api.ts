@@ -1,4 +1,4 @@
-import type { CapabilityRecord, ComparisonRow, ComparisonTreeNode, DashboardData, DashboardQuery, DailyStat, PricingEntry, SearchResult, SessionRecord, TagRecord, TimelineEvent, TokenBreakdown, TurnRecord, OverviewStat, TrendPoint } from './types'
+import type { Budget, BudgetSummary, CapabilityRecord, ComparisonRow, ComparisonTreeNode, DashboardData, DashboardQuery, DailyStat, PricingEntry, SearchResult, SessionRecord, TagRecord, TimelineEvent, TokenBreakdown, TurnRecord, OverviewStat, TrendPoint } from './types'
 
 type JsonRecord = Record<string, unknown>
 
@@ -106,6 +106,8 @@ function queryString(query: DashboardQuery): string {
   if (query.tool) params.set('tool', query.tool)
   if (query.model) params.set('model', query.model)
   if (query.tokenType) params.set('tokenType', query.tokenType)
+  if (query.projectId) params.set('projectId', query.projectId)
+  if (query.tag) params.set('tag', query.tag)
   if (query.trendInterval) params.set('interval', query.trendInterval)
   return params.toString()
 }
@@ -521,6 +523,50 @@ export class TokenDashboardClient {
 
   async deleteTag(scope: string, entityId: string, tagIdOrKey: string): Promise<void> {
     await this.json(`/api/tags/${encodeURIComponent(scope)}/${encodeURIComponent(entityId)}/${encodeURIComponent(tagIdOrKey)}`, { method: 'DELETE' })
+  }
+
+  async getBudgets(query?: Pick<DashboardQuery, 'from' | 'to' | 'timeZone' | 'projectId' | 'tag'>): Promise<Budget[]> {
+    const params = query ? new URLSearchParams({ from: query.from, to: query.to, timeZone: query.timeZone }) : new URLSearchParams()
+    if (query?.projectId) params.set('projectId', query.projectId)
+    if (query?.tag) params.set('tag', query.tag)
+    const payload = await this.json<unknown>(`/api/budgets${params.size ? `?${params.toString()}` : ''}`)
+    const rows = Array.isArray(payload) ? payload : records((payload as JsonRecord | null)?.budgets)
+    return rows.map((row) => ({
+      id: stringValue(row, 'id', 'budgetId', 'budget_id'),
+      name: stringValue(row, 'name', 'title'),
+      amountUsd: numberValue(row, 'amountUsd', 'amount_usd', 'limitUsd', 'limit_usd'),
+      period: stringValue(row, 'period', 'interval') || 'monthly',
+      fromDate: stringValue(row, 'fromDate', 'from_date', 'startDate', 'start_date'),
+      toDate: nullableString(row, 'toDate', 'to_date', 'endDate', 'end_date'),
+      projectId: nullableString(row, 'projectId', 'project_id'),
+      tag: nullableString(row, 'tag', 'tagKey', 'tag_key'),
+      enabled: row.enabled !== false
+    }))
+  }
+
+  async saveBudget(request: Omit<Budget, 'id'> & { id?: string }): Promise<unknown> {
+    const method = request.id ? 'PUT' : 'POST'
+    const path = request.id ? `/api/budgets/${encodeURIComponent(request.id)}` : '/api/budgets'
+    return this.json(path, { method, body: JSON.stringify(request) })
+  }
+
+  async deleteBudget(id: string): Promise<void> {
+    await this.json(`/api/budgets/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
+
+  async getBudgetSummaries(query: Pick<DashboardQuery, 'from' | 'to' | 'timeZone' | 'projectId' | 'tag'>): Promise<BudgetSummary[]> {
+    const params = new URLSearchParams({ from: query.from, to: query.to, timeZone: query.timeZone })
+    if (query.projectId) params.set('projectId', query.projectId)
+    if (query.tag) params.set('tag', query.tag)
+    const payload = await this.json<unknown>(`/api/budgets/summary?${params.toString()}`)
+    const rows = Array.isArray(payload) ? payload : records((payload as JsonRecord | null)?.summaries)
+    return rows.map((row) => ({
+      budgetId: stringValue(row, 'budgetId', 'budget_id', 'id'),
+      spentUsd: numberValue(row, 'spentUsd', 'spent_usd', 'costUsd', 'cost_usd'),
+      tokens: numberValue(row, 'tokens', 'tokenCount', 'token_count'),
+      costCoverage: nullableNumber(row, 'costCoverage', 'cost_coverage'),
+      percentUsed: numberValue(row, 'percentUsed', 'percent_used', 'usagePercent')
+    }))
   }
 
   async updatePricing(request: PriceWriteRequest): Promise<unknown> {

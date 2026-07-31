@@ -4,7 +4,7 @@ namespace TokenDashboard.Data;
 
 public sealed class SchemaMigrator
 {
-    public const int CurrentVersion = 6;
+    public const int CurrentVersion = 7;
 
     public static void Migrate(SqliteConnection connection)
     {
@@ -31,7 +31,8 @@ public sealed class SchemaMigrator
         if (version == 0)
         {
             ApplyLatestSchema(transaction);
-            Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) VALUES (6, $appliedAtUtc);", ("$appliedAtUtc", UtcNow()));
+            ApplyVersionSeven(transaction);
+            Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) VALUES (7, $appliedAtUtc);", ("$appliedAtUtc", UtcNow()));
         }
         else
         {
@@ -66,6 +67,14 @@ public sealed class SchemaMigrator
             {
                 ApplyVersionSix(transaction);
                 Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) VALUES (6, $appliedAtUtc);", ("$appliedAtUtc", UtcNow()));
+                version = 6;
+            }
+
+            if (version < 7)
+            {
+                ApplyVersionSeven(transaction);
+                Execute(transaction, "UPDATE schema_versions SET version = 7, applied_at_utc = $appliedAtUtc WHERE version = 6;", ("$appliedAtUtc", UtcNow()));
+                Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) SELECT 7, $appliedAtUtc WHERE NOT EXISTS (SELECT 1 FROM schema_versions WHERE version = 7);", ("$appliedAtUtc", UtcNow()));
             }
         }
 
@@ -316,6 +325,29 @@ public sealed class SchemaMigrator
         {
             AddColumnIfMissing(transaction, "turns", "effort", "TEXT");
         }
+    }
+
+    private static void ApplyVersionSeven(SqliteTransaction transaction)
+    {
+        Execute(transaction, """
+            CREATE TABLE IF NOT EXISTS budgets
+            (
+                budget_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                amount_usd REAL NOT NULL,
+                period TEXT NOT NULL CHECK (period IN ('daily', 'monthly', 'custom')),
+                from_date TEXT NOT NULL,
+                to_date TEXT,
+                project_id TEXT,
+                tag TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                created_at_utc TEXT NOT NULL,
+                updated_at_utc TEXT NOT NULL,
+                CHECK (amount_usd >= 0),
+                CHECK (to_date IS NULL OR to_date >= from_date)
+            );
+            CREATE INDEX IF NOT EXISTS ix_budgets_period_dates ON budgets (enabled, from_date, to_date);
+            """);
     }
 
     private static void AddColumnIfMissing(SqliteTransaction transaction, string columnName, string definition)
