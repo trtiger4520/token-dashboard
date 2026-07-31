@@ -7,14 +7,19 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$runtimeDirectory = Join-Path $repositoryRoot '.codex\environments\runtime'
+$scriptDirectory = Get-Item -LiteralPath $PSScriptRoot
+$repositoryRoot = $scriptDirectory.Parent.Parent.FullName
+$gitSafeDirectory = $repositoryRoot.Replace('\', '/')
+$composeFile = Join-Path $repositoryRoot 'compose.yaml'
+$codexDirectory = Join-Path $repositoryRoot '.codex'
+$environmentsDirectory = Join-Path $codexDirectory 'environments'
+$runtimeDirectory = Join-Path $environmentsDirectory 'runtime'
 $runtimeEnvironmentFile = Join-Path $runtimeDirectory 'compose.env'
 
 function Get-NormalizedBranchName {
-    $branchName = (& git -c "safe.directory=$repositoryRoot" -C $repositoryRoot branch --show-current).Trim()
+    $branchName = "$(& git -c "safe.directory=$gitSafeDirectory" -C $repositoryRoot branch --show-current)".Trim()
     if ([string]::IsNullOrWhiteSpace($branchName)) {
-        $commit = (& git -c "safe.directory=$repositoryRoot" -C $repositoryRoot rev-parse --short HEAD).Trim()
+        $commit = "$(& git -c "safe.directory=$gitSafeDirectory" -C $repositoryRoot rev-parse --short HEAD)".Trim()
         $branchName = "detached-$commit"
     }
 
@@ -43,15 +48,22 @@ function Get-AvailablePort {
     }
 }
 
+function Get-ComposeProjectName {
+    return "token-dashboard-$(Get-NormalizedBranchName)-$(Get-WorktreeHash)"
+}
+
 function Get-ComposeEnvironment {
+    $projectName = Get-ComposeProjectName
     if (Test-Path -LiteralPath $runtimeEnvironmentFile) {
         $values = ConvertFrom-StringData -StringData (Get-Content -LiteralPath $runtimeEnvironmentFile -Raw)
-        if ($values.ContainsKey('TOKEN_DASHBOARD_PORT') -and $values.ContainsKey('COMPOSE_PROJECT_NAME')) {
+        if (
+            $values.ContainsKey('TOKEN_DASHBOARD_PORT') -and
+            $values['COMPOSE_PROJECT_NAME'] -eq $projectName
+        ) {
             return $values
         }
     }
 
-    $projectName = "token-dashboard-$(Get-NormalizedBranchName)-$(Get-WorktreeHash)"
     $port = Get-AvailablePort
     New-Item -ItemType Directory -Path $runtimeDirectory -Force | Out-Null
     @(
@@ -69,6 +81,7 @@ $composeEnvironment = Get-ComposeEnvironment
 $composeArguments = @(
     '--project-name', $composeEnvironment['COMPOSE_PROJECT_NAME'],
     '--env-file', $runtimeEnvironmentFile
+    '--file', $composeFile
 )
 
 if ($Action -eq 'up') {
