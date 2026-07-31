@@ -213,24 +213,24 @@ public static class SourcePathCatalog
     {
         ArgumentNullException.ThrowIfNull(options);
         var home = Required(options.UserHome, nameof(options.UserHome));
-        var claudeRoot = Path.Combine(home, ".claude");
-        var codexRoot = Path.Combine(home, ".codex");
+        var claudeRoot = PlatformCombine(options.Platform, home, ".claude");
+        var codexRoot = PlatformCombine(options.Platform, home, ".codex");
         var claudePaths = new[]
         {
-            Path.Combine(claudeRoot, "projects"),
-            Path.Combine(claudeRoot, "sessions")
+            PlatformCombine(options.Platform, claudeRoot, "projects"),
+            PlatformCombine(options.Platform, claudeRoot, "sessions")
         };
         var codexPaths = new[]
         {
-            Path.Combine(codexRoot, "sessions"),
-            Path.Combine(codexRoot, "archived_sessions")
+            PlatformCombine(options.Platform, codexRoot, "sessions"),
+            PlatformCombine(options.Platform, codexRoot, "archived_sessions")
         };
 
         var appDataClaude = options.Platform switch
         {
-            HostPlatform.Windows => options.AppData is null ? null : Path.Combine(options.AppData, "Claude"),
-            HostPlatform.MacOS => Path.Combine(home, "Library", "Application Support", "Claude"),
-            _ => Path.Combine(home, ".config", "Claude")
+            HostPlatform.Windows => options.AppData is null ? null : PlatformCombine(options.Platform, options.AppData, "Claude"),
+            HostPlatform.MacOS => PlatformCombine(options.Platform, home, "Library", "Application Support", "Claude"),
+            _ => PlatformCombine(options.Platform, home, ".config", "Claude")
         };
 
         return kind switch
@@ -248,6 +248,14 @@ public static class SourcePathCatalog
         return string.IsNullOrWhiteSpace(value)
             ? throw new ArgumentException("Value is required", parameterName)
             : value.Trim();
+    }
+
+    private static string PlatformCombine(HostPlatform platform, params string[] parts)
+    {
+        var combined = Path.Combine(parts);
+        return platform == HostPlatform.Windows
+            ? combined.Replace('/', '\\')
+            : combined.Replace('\\', '/');
     }
 }
 

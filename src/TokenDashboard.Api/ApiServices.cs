@@ -335,7 +335,7 @@ public sealed class SourceAdapterRegistry
         var normalized = path.Replace('\\', '/').TrimEnd('/').ToLowerInvariant();
         var kind = normalized switch
         {
-            var value when value.Contains("application support/claude", StringComparison.Ordinal) || value.Contains("appdata/claude", StringComparison.Ordinal) => SourceAdapterKind.ClaudeCodeApp,
+            var value when value.Contains("application support/claude", StringComparison.Ordinal) || value.Contains("appdata/claude", StringComparison.Ordinal) || value.Contains("/.config/claude", StringComparison.Ordinal) => SourceAdapterKind.ClaudeCodeApp,
             var value when value.Contains("/.claude/", StringComparison.Ordinal) => SourceAdapterKind.ClaudeCodeCli,
             var value when value.EndsWith("/.codex/archived_sessions", StringComparison.Ordinal) => SourceAdapterKind.CodexCli,
             var value when value.Contains("/.codex/sessions", StringComparison.Ordinal) => SourceAdapterKind.CodexApp,
