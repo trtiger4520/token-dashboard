@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Net;
+using System.Globalization;
 using System.Reflection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
@@ -39,6 +40,7 @@ public static class ProgramEntry
         builder.Services.AddSingleton<DashboardStore>();
         builder.Services.AddSingleton<DashboardDataService>();
         builder.Services.AddSingleton<DashboardReadService>();
+        builder.Services.AddSingleton<BudgetService>();
         builder.Services.AddSingleton<PricingResolver>();
         builder.Services.AddSingleton<SourceAdapterRegistry>();
         builder.Services.AddSingleton<SyncJobService>();
@@ -70,7 +72,7 @@ public static class ProgramEntry
         {
             return dashboard.TryTrend(Range(request), request.Query["interval"].ToString(), Filter(request), out var points)
                 ? Results.Ok(points)
-                : Results.BadRequest(new { error = "interval must be one of 15m, 30m, 1h, 3h, 6h, 1d or 3d" });
+                : Results.BadRequest(new { error = "interval must be one of 15m, 30m, 1h, 3h, 6h, 1d, 3d or 7d" });
         });
         app.MapGet("/api/usage/monthly", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Monthly(Range(request), Filter(request))));
         app.MapGet("/api/heatmap", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Heatmap(Range(request), Filter(request))));
@@ -103,6 +105,22 @@ public static class ProgramEntry
         app.MapGet("/api/tags", (DashboardDataService data) => Results.Ok(TagAssignments(data)));
         app.MapPost("/api/tags", ([FromBody] TagRequest request, [FromServices] DashboardDataService data) => AddTag(request, data));
         app.MapDelete("/api/tags/{scope}/{entityId}/{tagId}", (HttpRequest request, string scope, string entityId, string tagId, DashboardDataService data) => RemoveTag(request, scope, entityId, tagId, data));
+
+        app.MapGet("/api/budgets", (BudgetService budgets) => Results.Ok(budgets.List()));
+        app.MapPost("/api/budgets", ([FromBody] BudgetRequest request, BudgetService budgets) =>
+        {
+            if (!ValidateBudget(request, out var error)) return Results.BadRequest(new { error });
+            var budget = budgets.Create(request);
+            return Results.Created($"/api/budgets/{budget.Id}", budget);
+        });
+        app.MapPut("/api/budgets/{id}", (string id, [FromBody] BudgetRequest request, BudgetService budgets) =>
+        {
+            if (!ValidateBudget(request, out var error)) return Results.BadRequest(new { error });
+            return budgets.Update(id, request) is { } budget ? Results.Ok(budget) : Results.NotFound();
+        });
+        app.MapDelete("/api/budgets/{id}", (string id, BudgetService budgets) => budgets.Delete(id) ? Results.NoContent() : Results.NotFound());
+        app.MapGet("/api/budgets/summary", (HttpRequest request, BudgetService budgets, DashboardReadService dashboard) => Results.Ok(BudgetSummaries(budgets.List(), dashboard)));
+        app.MapGet("/api/budgets/{id}/summary", (string id, BudgetService budgets, DashboardReadService dashboard) => budgets.Get(id) is { } budget ? Results.Ok(BudgetSummaries([budget], dashboard).Single()) : Results.NotFound());
 
         app.MapGet("/api/pricing", (PricingService pricing) => Results.Ok(new { currency = "USD", catalogVersion = BuiltInPricingCatalog.Version, overrideCount = pricing.OverrideCount, entries = pricing.List() }));
         app.MapGet("/api/pricing/unknown", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.UnknownPricing(Range(request), Filter(request))));
@@ -190,7 +208,52 @@ public static class ProgramEntry
         NullIfEmpty(request.Query["sourceId"].ToString()),
         NullIfEmpty(request.Query["tool"].ToString()),
         NullIfEmpty(request.Query["model"].ToString()),
-        NullIfEmpty(request.Query["tokenType"].ToString()));
+        NullIfEmpty(request.Query["tokenType"].ToString()),
+        NullIfEmpty(request.Query["workspaceId"].ToString()),
+        NullIfEmpty(request.Query["projectId"].ToString()),
+        NullIfEmpty(request.Query["tag"].ToString()));
+
+    private static bool ValidateBudget(BudgetRequest request, out string error)
+    {
+        error = string.Empty;
+        var period = request.Period?.Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(request.Name) || request.AmountUsd < 0 || period is not ("daily" or "monthly" or "custom") || period == "custom" && string.IsNullOrWhiteSpace(request.ToDate))
+        {
+            error = "name, non-negative amountUsd and period (daily, monthly or custom) are required";
+            return false;
+        }
+
+        if (!DateTime.TryParse(request.FromDate ?? DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture, DateTimeStyles.None, out var from) || request.ToDate is not null && (!DateTime.TryParse(request.ToDate, CultureInfo.InvariantCulture, DateTimeStyles.None, out var to) || to.Date < from.Date))
+        {
+            error = "fromDate and toDate must be valid dates with toDate on or after fromDate";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static BudgetSummaryDto[] BudgetSummaries(IReadOnlyList<BudgetDto> budgets, DashboardReadService dashboard)
+    {
+        return budgets.Select(budget =>
+        {
+            var from = DateTime.Parse(budget.FromDate, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal);
+            var to = budget.ToDate is not null ? DateTime.Parse(budget.ToDate, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal).AddDays(1) : budget.Period switch
+            {
+                "daily" => from.Date.AddDays(1),
+                "monthly" => new DateTime(from.Year, from.Month, 1).AddMonths(1),
+                _ => from.Date.AddDays(1)
+            };
+            var range = DateRangeResolver.Resolve(null, from.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), to.AddDays(-1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), "UTC");
+            var overview = dashboard.Overview(range, new DashboardFilter(ProjectId: budget.ProjectId, Tag: budget.Tag));
+            var json = JsonSerializer.SerializeToElement(overview);
+            var spent = json.GetProperty("costUsd");
+            var partial = json.GetProperty("partialCostUsd").GetDecimal();
+            var spentUsd = spent.ValueKind == JsonValueKind.Null ? partial : spent.GetDecimal();
+            var tokens = json.GetProperty("totalTokens").GetInt64();
+            decimal? coverage = json.GetProperty("costCoverage").ValueKind == JsonValueKind.Null ? null : json.GetProperty("costCoverage").GetDecimal();
+            return new BudgetSummaryDto(budget.Id, spentUsd, tokens, coverage, budget.AmountUsd == 0 ? 0 : spentUsd / budget.AmountUsd * 100m);
+        }).ToArray();
+    }
 
     private static string? ResolveWebRootPath()
     {

@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('win-x64', 'linux-x64', 'osx-x64')]
+    [ValidateSet('win-x64', 'linux-x64', 'osx-arm64')]
     [string]$Runtime,
     [string]$Version = '',
     [string]$PublishRoot = 'artifacts/publish',
@@ -19,7 +19,7 @@ if (-not (Test-Path -LiteralPath $source -PathType Container)) {
 $archiveName = switch ($Runtime) {
     'win-x64' { 'token-dashboard-win-x64.zip' }
     'linux-x64' { 'token-dashboard-linux-x64.tar.gz' }
-    'osx-x64' { 'token-dashboard-osx-x64.tar.gz' }
+    'osx-arm64' { 'token-dashboard-osx-arm64.tar.gz' }
 }
 
 $null = New-Item -ItemType Directory -Path $outputDirectory -Force

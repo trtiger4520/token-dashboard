@@ -37,20 +37,21 @@ done
 
 case "$(uname -s)" in
     Linux) runtime='linux-x64' ;;
-    Darwin) runtime='osx-x64' ;;
+    Darwin) runtime='osx-arm64' ;;
     *) echo 'Only Linux and macOS are supported by this installer' >&2; exit 1 ;;
 esac
 
-case "$(uname -m)" in
-    x86_64|amd64) ;;
-    *) echo 'Only x64 is supported by this installer' >&2; exit 1 ;;
+case "$runtime:$(uname -m)" in
+    linux-x64:x86_64|linux-x64:amd64|osx-arm64:arm64|osx-arm64:aarch64) ;;
+    linux-x64:*) echo 'Only x64 Linux is supported by this installer' >&2; exit 1 ;;
+    osx-arm64:*) echo 'Only Apple Silicon macOS is supported by this installer' >&2; exit 1 ;;
 esac
 
 command -v curl >/dev/null 2>&1 || { echo 'curl is required' >&2; exit 1; }
 command -v tar >/dev/null 2>&1 || { echo 'tar is required' >&2; exit 1; }
 
 if [[ -z "$install_directory" ]]; then
-    if [[ "$runtime" == 'osx-x64' ]]; then
+    if [[ "$runtime" == 'osx-arm64' ]]; then
         install_directory="$HOME/Library/Application Support/TokenDashboard"
     else
         install_directory="${XDG_DATA_HOME:-$HOME/.local/share}/token-dashboard"
@@ -67,7 +68,7 @@ fi
 
 case "$runtime" in
     linux-x64) asset_name='token-dashboard-linux-x64.tar.gz' ;;
-    osx-x64) asset_name='token-dashboard-osx-x64.tar.gz' ;;
+    osx-arm64) asset_name='token-dashboard-osx-arm64.tar.gz' ;;
 esac
 
 root="$(cd "$install_directory" 2>/dev/null && pwd)" || root="$install_directory"

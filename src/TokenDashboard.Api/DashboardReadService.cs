@@ -22,9 +22,11 @@ public sealed class DashboardReadService
             """
             SELECT se.event_fingerprint, se.source_id, s.adapter_kind, se.session_id, se.turn_id,
                    se.occurred_at_utc, se.source_timezone, se.event_type, se.prompt, se.response,
-                   se.model, se.tool, se.subagent, se.workflow, se.payload, se.cache_metrics_reported
+                   se.model, se.tool, se.subagent, se.workflow, se.payload, se.cache_metrics_reported,
+                   sess.workspace_id
             FROM sub_events AS se
             INNER JOIN sources AS s ON s.source_id = se.source_id
+            LEFT JOIN sessions AS sess ON sess.session_id = se.session_id
             WHERE se.occurred_at_utc >= $fromUtc AND se.occurred_at_utc < $toUtc
             ORDER BY se.occurred_at_utc, se.event_fingerprint;
             """,
@@ -63,7 +65,8 @@ public sealed class DashboardReadService
                 ? counts
                 : new Dictionary<string, long>(StringComparer.Ordinal),
             ModeFromPayload(String(row, "payload")),
-            row["cache_metrics_reported"] is null ? null : Convert.ToInt32(row["cache_metrics_reported"], CultureInfo.InvariantCulture) != 0)).ToArray();
+            row["cache_metrics_reported"] is null ? null : Convert.ToInt32(row["cache_metrics_reported"], CultureInfo.InvariantCulture) != 0,
+            NullableString(row, "workspace_id"))).ToArray();
 
         return ApplyFilter(events, filter).ToArray();
     }
@@ -229,6 +232,8 @@ public sealed class DashboardReadService
             ("$fromUtc", Utc(range.FromUtc)),
             ("$toUtc", Utc(range.ToUtc)))
             .Where(row => filter is null || string.IsNullOrWhiteSpace(filter.SourceId) || string.Equals(String(row, "source_id"), filter.SourceId, StringComparison.OrdinalIgnoreCase))
+            .Where(row => filter is null || string.IsNullOrWhiteSpace(filter.WorkspaceId) || string.Equals(NullableString(row, "workspace_id"), filter.WorkspaceId, StringComparison.OrdinalIgnoreCase))
+            .Where(row => filter is null || string.IsNullOrWhiteSpace(filter.ProjectId) || string.Equals(NullableString(row, "workspace_id"), filter.ProjectId, StringComparison.OrdinalIgnoreCase))
             .Where(row => filter is null || !HasNonSourceFilter(filter) || bySession.ContainsKey(String(row, "session_id")))
             .Select(row =>
             {
@@ -442,7 +447,8 @@ public sealed class DashboardReadService
             ["3h"] = TimeSpan.FromHours(3),
             ["6h"] = TimeSpan.FromHours(6),
             ["1d"] = TimeSpan.FromDays(1),
-            ["3d"] = TimeSpan.FromDays(3)
+            ["3d"] = TimeSpan.FromDays(3),
+            ["7d"] = TimeSpan.FromDays(7)
         };
 
         public static bool TryParse(string? value, out TimeSpan duration)
@@ -642,7 +648,7 @@ public sealed class DashboardReadService
         }).ToArray();
     }
 
-    private static IEnumerable<EventRow> ApplyFilter(IEnumerable<EventRow> events, DashboardFilter? filter)
+    private IEnumerable<EventRow> ApplyFilter(IEnumerable<EventRow> events, DashboardFilter? filter)
     {
         if (filter is null)
         {
@@ -650,17 +656,34 @@ public sealed class DashboardReadService
         }
 
         var tokenType = string.IsNullOrWhiteSpace(filter.TokenType) ? null : CanonicalTokenType(filter.TokenType);
+        var tagEntities = TagEntities(filter.Tag);
         return events
             .Where(item => string.IsNullOrWhiteSpace(filter.SourceId) || string.Equals(item.SourceId, filter.SourceId, StringComparison.OrdinalIgnoreCase))
             .Where(item => string.IsNullOrWhiteSpace(filter.Tool) || string.Equals(item.Tool, filter.Tool, StringComparison.OrdinalIgnoreCase))
             .Where(item => string.IsNullOrWhiteSpace(filter.Model) || string.Equals(item.Model, filter.Model, StringComparison.OrdinalIgnoreCase))
+            .Where(item => string.IsNullOrWhiteSpace(filter.WorkspaceId) || string.Equals(item.WorkspaceId, filter.WorkspaceId, StringComparison.OrdinalIgnoreCase))
+            .Where(item => string.IsNullOrWhiteSpace(filter.ProjectId) || string.Equals(item.WorkspaceId, filter.ProjectId, StringComparison.OrdinalIgnoreCase))
+            .Where(item => tagEntities is null || tagEntities.Contains(item.SourceId) || item.SessionId is { } sessionId && tagEntities.Contains(sessionId) || item.WorkspaceId is { } workspaceId && tagEntities.Contains(workspaceId))
             .Select(item => tokenType is null
                 ? item
                 : item with { Tokens = item.Tokens.Where(pair => string.Equals(CanonicalTokenType(pair.Key), tokenType, StringComparison.Ordinal)).ToDictionary(pair => CanonicalTokenType(pair.Key), pair => pair.Value, StringComparer.Ordinal) })
             .Where(item => tokenType is null || item.Tokens.Count > 0);
     }
 
-    private static bool HasNonSourceFilter(DashboardFilter filter) => !string.IsNullOrWhiteSpace(filter.Tool) || !string.IsNullOrWhiteSpace(filter.Model) || !string.IsNullOrWhiteSpace(filter.TokenType);
+    private static bool HasNonSourceFilter(DashboardFilter filter) => !string.IsNullOrWhiteSpace(filter.Tool) || !string.IsNullOrWhiteSpace(filter.Model) || !string.IsNullOrWhiteSpace(filter.TokenType) || !string.IsNullOrWhiteSpace(filter.WorkspaceId) || !string.IsNullOrWhiteSpace(filter.ProjectId) || !string.IsNullOrWhiteSpace(filter.Tag);
+
+    private HashSet<string>? TagEntities(string? tag)
+    {
+        if (string.IsNullOrWhiteSpace(tag)) return null;
+        var parts = tag.Split('=', 2, StringSplitOptions.TrimEntries);
+        var key = parts[0];
+        var value = parts.Length > 1 ? parts[1] : null;
+        return data.Query("""
+            SELECT source_id AS entity_id FROM source_tags st INNER JOIN tags t ON t.tag_id = st.tag_id WHERE (t.tag_key = $key OR ($value IS NULL AND t.tag_value = $key)) AND ($value IS NULL OR t.tag_value = $value)
+            UNION SELECT session_id FROM session_tags st INNER JOIN tags t ON t.tag_id = st.tag_id WHERE (t.tag_key = $key OR ($value IS NULL AND t.tag_value = $key)) AND ($value IS NULL OR t.tag_value = $value)
+            UNION SELECT project_id FROM project_tags st INNER JOIN tags t ON t.tag_id = st.tag_id WHERE (t.tag_key = $key OR ($value IS NULL AND t.tag_value = $key)) AND ($value IS NULL OR t.tag_value = $value);
+            """, ("$key", key), ("$value", (object?)value ?? DBNull.Value)).Select(row => String(row, "entity_id")).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
 
     private static Dictionary<string, long> AggregateTokens(IEnumerable<KeyValuePair<string, long>> tokens)
     {

@@ -5,7 +5,7 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repository_root"
 
 if [[ "$#" -eq 0 ]]; then
-    set -- win-x64 linux-x64 osx-x64
+    set -- win-x64 linux-x64 osx-arm64
 fi
 
 version=''
@@ -33,7 +33,7 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 if [[ "${#runtimes[@]}" -eq 0 ]]; then
-    runtimes=(win-x64 linux-x64 osx-x64)
+    runtimes=(win-x64 linux-x64 osx-arm64)
 fi
 
 pnpm install --frozen-lockfile
