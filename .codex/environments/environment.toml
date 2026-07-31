@@ -3,14 +3,19 @@ version = 1
 name = "Token Dashboard"
 
 [setup]
+script = ""
+
+[setup.win32]
 script = "pwsh -NoProfile -File .codex/scripts/compose.ps1 -Action up"
 
 [[actions]]
 name = "Run"
 icon = "run"
 command = "pwsh -NoProfile -File .codex/scripts/compose.ps1 -Action up"
+platform = "win32"
 
 [[actions]]
 name = "Status"
 icon = "tool"
 command = "pwsh -NoProfile -File .codex/scripts/compose.ps1 -Action status"
+platform = "win32"
