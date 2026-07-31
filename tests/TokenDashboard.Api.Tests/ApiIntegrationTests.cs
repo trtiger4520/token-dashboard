@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using TokenDashboard.Api;
+using TokenDashboard.Core;
 using Xunit;
 
 [assembly: CollectionBehavior(DisableTestParallelization = true)]
@@ -440,6 +441,52 @@ public sealed class ApiIntegrationTests
     }
 
     [Fact]
+    public void BuiltInGpt56PricingKeepsHistoryAndUsesCurrentRates()
+    {
+        var beforeReduction = new DateTimeOffset(2026, 7, 30, 23, 59, 59, TimeSpan.Zero);
+        var afterReduction = new DateTimeOffset(2026, 7, 31, 0, 0, 0, TimeSpan.Zero);
+
+        Assert.Equal(2.50m, Price("gpt-5.6-terra", TokenType.Input, beforeReduction, 100, "standard"));
+        Assert.Equal(2m, Price("gpt-5.6-terra", TokenType.Input, afterReduction, 100, "standard"));
+        Assert.Equal(0.20m, Price("gpt-5.6-terra", TokenType.CachedInput, afterReduction, 100, "standard"));
+        Assert.Equal(2.50m, Price("gpt-5.6-terra", TokenType.Create("cache-write"), afterReduction, 100, "standard"));
+        Assert.Equal(12m, Price("gpt-5.6-terra", TokenType.Output, afterReduction, 100, "standard"));
+        Assert.Equal(4m, Price("gpt-5.6-terra", TokenType.Input, afterReduction, 272000, "long-context-1m"));
+        Assert.Equal(0.40m, Price("gpt-5.6-terra", TokenType.CachedInput, afterReduction, 272000, "long-context-1m"));
+        Assert.Equal(5m, Price("gpt-5.6-terra", TokenType.Create("cache-write"), afterReduction, 272000, "long-context-1m"));
+        Assert.Equal(18m, Price("gpt-5.6-terra", TokenType.Output, afterReduction, 272000, "long-context-1m"));
+        Assert.Equal(1m, Price("gpt-5.6-terra", TokenType.Input, afterReduction, 100, "batch"));
+        Assert.Equal(1m, Price("gpt-5.6-terra", TokenType.Input, afterReduction, 100, "flex"));
+
+        Assert.Equal(0.20m, Price("gpt-5.6-luna", TokenType.Input, afterReduction, 100, "standard"));
+        Assert.Equal(0.02m, Price("gpt-5.6-luna", TokenType.CachedInput, afterReduction, 100, "standard"));
+        Assert.Equal(0.25m, Price("gpt-5.6-luna", TokenType.Create("cache-write"), afterReduction, 100, "standard"));
+        Assert.Equal(1.20m, Price("gpt-5.6-luna", TokenType.Output, afterReduction, 100, "standard"));
+
+        Assert.Equal(4m, Price("gpt-5.6-terra", TokenType.Input, afterReduction, 100, "fast"));
+        Assert.Equal(4m, Price("gpt-5.6-terra", TokenType.Input, afterReduction, 100, "priority"));
+        Assert.Equal("2026-07-31", BuiltInPricingCatalog.Version);
+    }
+
+    [Fact]
+    public async Task CodexFastServiceTierUsesFastPricing()
+    {
+        using var factory = new ApiFactory();
+        using var client = factory.CreateAuthenticatedClient();
+        var content = """
+            {"timestamp":"2026-07-31T00:00:00Z","type":"session_meta","payload":{"id":"fast-session","session_id":"fast-session"}}
+            {"timestamp":"2026-07-31T00:00:01Z","type":"turn_context","payload":{"turn_id":"fast-turn","model":"gpt-5.6-terra","service_tier":"priority"}}
+            {"timestamp":"2026-07-31T00:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100}}}}
+            """;
+
+        var response = await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", null, "fast.jsonl", content));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var overview = await client.GetFromJsonAsync<JsonElement>("/api/overview?from=2026-07-31&to=2026-08-01");
+        Assert.Equal(0.0004m, overview.GetProperty("costUsd").GetDecimal());
+    }
+
+    [Fact]
     public async Task ContentImportDeletesTemporaryFileAndValidatesExtension()
     {
         using var factory = new ApiFactory();
@@ -663,6 +710,12 @@ public sealed class ApiIntegrationTests
         var path = Path.Combine(Path.GetTempPath(), $"token-dashboard-api-{Guid.NewGuid():N}.json");
         File.WriteAllText(path, content);
         return path;
+    }
+
+    private static decimal Price(string model, TokenType tokenType, DateTimeOffset atUtc, long totalInputTokens, string mode)
+    {
+        return BuiltInPricingCatalog.Find("openai", model, tokenType.Value, atUtc, totalInputTokens, mode)?.UsdPerMillionTokens
+            ?? throw new Xunit.Sdk.XunitException($"Expected pricing for {model} {mode} {tokenType.Value}");
     }
 
     private static int AvailableLoopbackPort()

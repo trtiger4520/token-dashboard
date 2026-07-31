@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using TokenDashboard.Core;
 using TokenDashboard.Data;
 
 namespace TokenDashboard.Api;
@@ -686,7 +687,9 @@ public sealed class DashboardReadService
         try
         {
             using var document = JsonDocument.Parse(payload);
-            return document.RootElement.TryGetProperty("mode", out var mode) && mode.ValueKind == JsonValueKind.String ? mode.GetString() : null;
+            return document.RootElement.TryGetProperty("mode", out var mode) && mode.ValueKind == JsonValueKind.String
+                ? PricingMode.Normalize(mode.GetString())
+                : null;
         }
         catch (JsonException)
         {
