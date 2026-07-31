@@ -3,22 +3,14 @@ version = 1
 name = "Token Dashboard"
 
 [setup]
-script = """
-pnpm install --frozen-lockfile
-dotnet restore TokenDashboard.slnx
-"""
+script = "pwsh -NoProfile -File .codex/scripts/compose.ps1 -Action up"
 
 [[actions]]
 name = "Run"
 icon = "run"
-command = "pnpm --filter token-dashboard-web build && dotnet run --project src/TokenDashboard.Api/TokenDashboard.Api.csproj"
+command = "pwsh -NoProfile -File .codex/scripts/compose.ps1 -Action up"
 
 [[actions]]
-name = "Test"
+name = "Status"
 icon = "tool"
-command = "pnpm --filter token-dashboard-web test && dotnet test TokenDashboard.slnx"
-
-[[actions]]
-name = "Build"
-icon = "tool"
-command = ".\\scripts\\build.ps1"
+command = "pwsh -NoProfile -File .codex/scripts/compose.ps1 -Action status"
