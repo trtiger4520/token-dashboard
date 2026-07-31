@@ -159,6 +159,8 @@ function normalizeDaily(row: JsonRecord): DailyStat {
     date: stringValue(row, 'date'),
     tokens: sumTokenCounts(tokenCounts),
     costUsd: nullableNumber(row, 'costUsd', 'cost_usd'),
+    partialCostUsd: numberValue(row, 'partialCostUsd', 'partial_cost_usd'),
+    costCoverage: nullableNumber(row, 'costCoverage', 'cost_coverage'),
     eventCount,
     turnCount,
     uniqueSessionCount,
@@ -269,6 +271,7 @@ function normalizeSession(summary: JsonRecord, detail: JsonRecord | undefined): 
   return {
     id: stringValue(summary, 'id', 'sessionId', 'session_id') || stringValue(detailSession, 'session_id', 'id'),
     title: stringValue(summary, 'title') || `Session ${stringValue(summary, 'id', 'sessionId', 'session_id').slice(0, 8)}`,
+    workspaceId: nullableString(summary, 'workspaceId', 'workspace_id') ?? nullableString(detailSession, 'workspace_id', 'workspaceId'),
     source: stringValue(summary, 'sourceId', 'source_id') || stringValue(detailSession, 'source_id'),
     tool: turns.flatMap((turn) => turn.events).find((event) => event.tool)?.tool ?? (firstEvent?.kind === 'tool' ? firstEvent.summary : ''),
     model: firstPrompt?.model || '',

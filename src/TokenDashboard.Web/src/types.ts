@@ -33,6 +33,8 @@ export interface DailyStat {
   date: string
   tokens: number
   costUsd: number | null
+  partialCostUsd: number
+  costCoverage: number | null
   eventCount: number
   turnCount: number
   uniqueSessionCount: number
@@ -95,6 +97,7 @@ export interface TurnRecord {
 export interface SessionRecord {
   id: string
   title: string
+  workspaceId: string | null
   source: string
   tool: string
   model: string

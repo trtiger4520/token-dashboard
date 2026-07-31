@@ -210,6 +210,7 @@ public sealed class ApiIntegrationTests
         {
             "/api/usage/daily?from=2026-07-08&to=2026-07-09",
             "/api/usage/trend?from=2026-07-08&to=2026-07-09&interval=30m",
+            "/api/usage/trend?from=2026-07-08&to=2026-07-09&interval=7d",
             "/api/usage/monthly?from=2026-07-08&to=2026-07-09",
             "/api/comparisons?from=2026-07-08&to=2026-07-09",
             "/api/comparisons/tree?from=2026-07-08&to=2026-07-09",

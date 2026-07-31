@@ -441,7 +441,8 @@ public sealed class DashboardReadService
             ["3h"] = TimeSpan.FromHours(3),
             ["6h"] = TimeSpan.FromHours(6),
             ["1d"] = TimeSpan.FromDays(1),
-            ["3d"] = TimeSpan.FromDays(3)
+            ["3d"] = TimeSpan.FromDays(3),
+            ["7d"] = TimeSpan.FromDays(7)
         };
 
         public static bool TryParse(string? value, out TimeSpan duration)

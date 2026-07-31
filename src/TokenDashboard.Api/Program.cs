@@ -70,7 +70,7 @@ public static class ProgramEntry
         {
             return dashboard.TryTrend(Range(request), request.Query["interval"].ToString(), Filter(request), out var points)
                 ? Results.Ok(points)
-                : Results.BadRequest(new { error = "interval must be one of 15m, 30m, 1h, 3h, 6h, 1d or 3d" });
+                : Results.BadRequest(new { error = "interval must be one of 15m, 30m, 1h, 3h, 6h, 1d, 3d or 7d" });
         });
         app.MapGet("/api/usage/monthly", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Monthly(Range(request), Filter(request))));
         app.MapGet("/api/heatmap", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Heatmap(Range(request), Filter(request))));

@@ -10,7 +10,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRoute, useRouter } from 'vue-router'
 import { extractStartupKey, TokenDashboardClient, type SourceDiscoveryResult, type SyncRequest } from './api'
 import { isValidDateRange, resolveDateRange, resolveDayRange, type DatePreset } from './dateRange'
-import { cacheTokenCount, createEmptyDashboardData, formatDateLabel, formatNumber, formatTokenCount, formatUsd, inputTokenCount, outputTokenCount, totalTokens, type DashboardData, type DashboardQuery, type EventKind, type PricingEntry, type SearchResult, type SessionRecord, type TagRecord, type TokenType, type UnknownPricing } from './types'
+import { cacheTokenCount, createEmptyDashboardData, formatDateLabel, formatNumber, formatTokenCount, formatUsd, inputTokenCount, outputTokenCount, totalTokens, type DashboardData, type DashboardQuery, type EventKind, type PricingEntry, type SearchResult, type SessionRecord, type TagRecord, type TokenType, type TrendPoint, type UnknownPricing } from './types'
 import { layoutTreemap, type TreemapRect } from './treemap'
 
 const client = new TokenDashboardClient()
@@ -75,26 +75,32 @@ const selectedDate = ref('')
 const datePreset = ref<DatePreset>('30')
 const dateRange = reactive(resolveDateRange('30'))
 const filters = reactive({ sourceId: 'all', tool: 'all', model: 'all', tokenType: 'all' as TokenType | 'all' })
-const trendInterval = ref('1d')
+type TrendMetric = 'cost' | 'tokens'
+type TrendGranularity = 'daily' | 'weekly' | 'monthly'
+
+function readDashboardPreference<T extends string>(key: string, fallback: T, allowed: readonly T[]): T {
+  const value = window.localStorage.getItem(`token-dashboard.${key}`)
+  return value !== null && allowed.includes(value as T) ? value as T : fallback
+}
+
+const trendMetric = ref<TrendMetric>(readDashboardPreference('trend-metric', 'cost', ['cost', 'tokens']))
+const trendGranularity = ref<TrendGranularity>(readDashboardPreference('trend-granularity', 'daily', ['daily', 'weekly', 'monthly']))
 
 const selectedSession = computed<SessionRecord | undefined>(() => data.value.sessions.find((session) => session.id === selectedSessionId.value))
 const selectedEvent = computed(() => selectedSession.value?.turns.flatMap((turn) => turn.events).find((event) => event.id === selectedEventId.value))
 const allTags = computed(() => [...new Set(data.value.tags.map((tag) => tag.key).concat(data.value.sessions.flatMap((session) => session.tags)))].sort())
-const visibleSessions = computed(() => data.value.sessions)
+const visibleSessions = computed(() => [...data.value.sessions].sort((left, right) => (right.partialCostUsd ?? 0) - (left.partialCostUsd ?? 0)))
 const totalTokenCount = computed(() => totalTokens(data.value.overview.tokenCounts))
 const totalCost = computed(() => data.value.overview.costUsd)
 const totalSessions = computed(() => data.value.overview.uniqueSessionCount)
 const averageCache = computed(() => data.value.overview.cacheHitRate)
+const displayedTrend = computed<TrendPoint[]>(() => trendGranularity.value === 'monthly'
+  ? data.value.monthly.map((point) => ({ ...point, bucketStartUtc: `${point.date}-01T00:00:00`, bucketEndUtc: '' }))
+  : data.value.trend)
+const trendValue = (point: TrendPoint): number => trendMetric.value === 'cost' ? point.costUsd ?? point.partialCostUsd : point.tokens
+const maxTrendValue = computed(() => Math.max(...displayedTrend.value.map(trendValue), 1))
 const maxTrendTokens = computed(() => Math.max(...data.value.trend.map((point) => point.tokens), 1))
 const heatmapDays = computed(() => data.value.heatmap.map((day) => ({ ...day, intensity: Math.max(1, Math.ceil((day.tokens / maxTrendTokens.value) * 5)) })))
-const trendOptions = computed(() => {
-  const days = Math.max(1, Math.round((new Date(`${dateRange.endDate}T00:00:00`).getTime() - new Date(`${dateRange.startDate}T00:00:00`).getTime()) / 86_400_000))
-  if (days <= 1) return ['15m', '30m', '1h']
-  if (days <= 3) return ['1h', '3h', '6h', '1d']
-  if (days <= 7) return ['6h', '1d']
-  return ['6h', '1d', '3d']
-})
-const trendDefault = computed(() => trendOptions.value.includes('30m') ? '30m' : trendOptions.value.includes('3h') ? '3h' : trendOptions.value.includes('6h') ? '6h' : '1d')
 const treemapContainer = ref<HTMLElement | null>(null)
 const treemapSize = reactive({ width: 640, height: 360 })
 const treemapViewBox = computed(() => `0 0 ${treemapSize.width} ${treemapSize.height}`)
@@ -207,12 +213,8 @@ function dashboardQuery(): DashboardQuery {
     tool: filters.tool === 'all' ? undefined : filters.tool,
     model: filters.model === 'all' ? undefined : filters.model,
     tokenType: filters.tokenType === 'all' ? undefined : filters.tokenType,
-    trendInterval: trendInterval.value
+    trendInterval: trendGranularity.value === 'weekly' ? '7d' : '1d'
   }
-}
-
-function syncTrendInterval(): void {
-  if (!trendOptions.value.includes(trendInterval.value)) trendInterval.value = trendDefault.value
 }
 
 function setTheme(dark: boolean): void {
@@ -223,7 +225,6 @@ function setTheme(dark: boolean): void {
 function applyPreset(preset: DatePreset): void {
   datePreset.value = preset
   if (preset !== 'custom') Object.assign(dateRange, resolveDateRange(preset))
-  syncTrendInterval()
   void refresh()
 }
 
@@ -231,12 +232,10 @@ function jumpToDay(offset: number): void {
   const base = offset === 0 ? new Date() : new Date(`${dateRange.endDate}T00:00:00`)
   Object.assign(dateRange, resolveDayRange(offset, base))
   datePreset.value = 'custom'
-  syncTrendInterval()
   void refresh()
 }
 
 async function refresh(): Promise<void> {
-  syncTrendInterval()
   if (!isValidDateRange(dateRange)) {
     errorMessage.value = '日期範圍無效，請確認開始日期不晚於結束日期'
     syncState.value = 'error'
@@ -297,11 +296,28 @@ function selectDate(date: string): void {
 }
 
 function trendLabel(value: string): string {
+  if (trendGranularity.value === 'monthly') return value.slice(0, 7)
   return new Intl.DateTimeFormat('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 }
 
-function trendIntervalLabel(value: string): string {
-  return ({ '15m': '15 分', '30m': '30 分', '1h': '1 小時', '3h': '3 小時', '6h': '6 小時', '1d': '1 天', '3d': '3 天' } as Record<string, string>)[value] ?? value
+function costCoverageLabel(coverage: number | null | undefined): string {
+  return coverage === null || coverage === undefined ? '覆蓋率未知' : `覆蓋 ${Math.round(coverage * 100)}%`
+}
+
+function trendValueLabel(point: TrendPoint): string {
+  if (trendMetric.value === 'tokens') return `${formatTokenCount(point.tokens)} Token`
+  const cost = point.costUsd ?? point.partialCostUsd
+  return `${point.costUsd === null ? '已知 ' : ''}${formatUsd(cost)} · ${costCoverageLabel(point.costCoverage)}`
+}
+
+function sessionCostLabel(session: SessionRecord): string {
+  if (session.costUsd !== null) return formatUsd(session.costUsd)
+  if (session.costCoverage === null || session.costCoverage === undefined) return '成本未知'
+  return `已知 ${formatUsd(session.partialCostUsd ?? 0)} · ${costCoverageLabel(session.costCoverage)}`
+}
+
+function formatSessionStartedAt(value: string): string {
+  return new Intl.DateTimeFormat('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 }
 
 function tokenTitle(value: number): string {
@@ -591,6 +607,12 @@ watch(treemapContainer, async (container, previousContainer) => {
   treemapResizeObserver?.observe(container)
 })
 
+watch([trendMetric, trendGranularity], ([metric, granularity]) => {
+  window.localStorage.setItem('token-dashboard.trend-metric', metric)
+  window.localStorage.setItem('token-dashboard.trend-granularity', granularity)
+  if (granularity !== 'monthly') void refresh()
+})
+
 onBeforeUnmount(() => {
   treemapResizeObserver?.disconnect()
   window.removeEventListener('resize', updateTreemapSize)
@@ -605,14 +627,14 @@ onBeforeUnmount(() => {
         <span>Token Dashboard</span>
       </div>
       <div class="topbar-context">
-        <span class="eyebrow">LOCAL ANALYSIS</span>
+        <span class="eyebrow">本機分析</span>
         <span class="topbar-divider" aria-hidden="true"></span>
-        <span class="mono">UTC / {{ dateRange.startDate }} — {{ dateRange.endDate }}</span>
+        <span class="mono">{{ data.overview.timeZoneId || '本機時區' }} / {{ dateRange.startDate }} — {{ dateRange.endDate }}</span>
       </div>
-      <nav class="topbar-nav" aria-label="主要導覽"><button type="button" :class="{ active: currentRoute === '/dashboard' }" @click="navigate('/dashboard')">Dashboard</button><button type="button" :class="{ active: currentRoute === '/pricing' }" @click="navigate('/pricing')">Pricing</button></nav>
+      <nav class="topbar-nav" aria-label="主要導覽"><button type="button" :class="{ active: currentRoute === '/dashboard' }" @click="navigate('/dashboard')">儀錶板</button><button type="button" :class="{ active: currentRoute === '/pricing' }" @click="navigate('/pricing')">定價</button></nav>
       <div class="topbar-actions">
-        <span class="sync-indicator" :class="`sync-${syncState}`" role="status">{{ syncState === 'loading' ? '同步中' : syncState === 'partial' ? '部分同步' : syncState === 'error' ? '同步錯誤' : syncState === 'empty' ? '無資料' : '已同步' }}</span>
-        <button class="button button-secondary" type="button" @click="void refresh()">重新同步</button>
+        <span class="sync-indicator" :class="`sync-${syncState}`" role="status">{{ syncState === 'loading' ? '更新資料中' : syncState === 'partial' ? '部分來源未更新' : syncState === 'error' ? '讀取失敗' : syncState === 'empty' ? '沒有資料' : '資料已更新' }}</span>
+        <button class="button button-secondary" type="button" @click="void refresh()">重新載入資料</button>
         <button class="button button-icon" type="button" :aria-label="isDark ? '切換為亮色模式' : '切換為暗色模式'" @click="setTheme(!isDark)">{{ isDark ? 'Light' : 'Dark' }}</button>
       </div>
     </header>
@@ -659,8 +681,8 @@ onBeforeUnmount(() => {
             <button class="button button-secondary" type="button" @click="jumpToDay(1)">後一天</button>
           </div>
           <div class="date-fields">
-            <label>開始日期<input v-model="dateRange.startDate" type="date" @change="datePreset = 'custom'; syncTrendInterval()" /></label>
-            <label>結束日期<input v-model="dateRange.endDate" type="date" @change="datePreset = 'custom'; syncTrendInterval()" /></label>
+            <label>開始日期<input v-model="dateRange.startDate" type="date" @change="datePreset = 'custom'" /></label>
+            <label>結束日期<input v-model="dateRange.endDate" type="date" @change="datePreset = 'custom'" /></label>
           </div>
           <button class="button button-primary button-full" type="button" aria-label="套用日期範圍" @click="void refresh()">套用範圍</button>
         </section>
@@ -695,38 +717,38 @@ onBeforeUnmount(() => {
         <button id="control-toggle" class="mobile-control-toggle" type="button" aria-controls="control-rail" :aria-expanded="controlRailOpen" @click="controlRailOpen = !controlRailOpen"><span>篩選與資料工具</span><span class="mono">{{ controlRailOpen ? '收合' : '展開' }}</span></button>
         <div v-if="syncState === 'partial'" class="state-banner state-warning" role="status"><strong>部分同步</strong><span>{{ operationMessage || '來源同步只完成部分工作，請檢查來源狀態後重新同步' }}</span></div>
         <div v-if="syncState === 'error'" class="state-banner state-error" role="alert"><strong>讀取失敗</strong><span>{{ errorMessage }}</span><button class="button button-secondary" type="button" @click="void refresh()">重試</button></div>
-        <div v-if="data.pricing.unknownCount > 0" class="state-banner state-info" role="status"><strong>未知價格 {{ data.pricing.unknownCount }} 筆</strong><span>找不到有效的歷史價格時保留未知，不以推估值替代</span><button class="button button-ghost" type="button" @click="navigate('/pricing')">查看定價</button></div>
+        <div v-if="data.pricing.unknownCount > 0" class="state-banner state-info" role="status"><strong>{{ data.pricing.unknownCount }} 種計費組合尚未定價</strong><span>這些事件仍計入 Token，但不計入已知成本。請補齊定價規則，系統不會推估費用</span><button class="button button-ghost" type="button" @click="navigate('/pricing')">管理定價</button></div>
 
          <div class="workspace-meta mono">snapshot {{ data.generatedAt.replace('T', ' ').replace('Z', ' UTC') }} · {{ data.overview.eventCount }} events · {{ data.overview.uniqueSessionCount }} unique sessions · {{ data.overview.turnCount }} turns</div>
 
         <div v-if="syncState === 'loading'" class="loading-grid" aria-label="正在載入 dashboard"><div v-for="index in 4" :key="index" class="skeleton"></div></div>
-        <div v-else-if="syncState === 'empty'" class="empty-state"><span class="eyebrow">NO LOCAL EVENTS</span><h3>目前日期範圍沒有事件</h3><p>調整日期或來源篩選，或從左側匯入 JSON / CSV 來源</p><button class="button button-primary" type="button" @click="applyPreset('30')">回到最近 30 天</button></div>
+        <div v-else-if="syncState === 'empty'" class="empty-state"><span class="eyebrow">沒有本機事件</span><h3>目前選取的日期與篩選條件沒有事件</h3><p>調整日期或來源篩選，或從左側匯入 JSON／CSV 資料</p><button class="button button-primary" type="button" @click="applyPreset('30')">查看最近 30 天</button></div>
         <template v-else>
           <section class="kpi-grid" aria-label="總覽指標">
-            <article class="kpi-panel"><span class="eyebrow">TOTAL TOKENS</span><strong :title="tokenTitle(totalTokenCount)">{{ formatTokenCount(totalTokenCount) }}</strong><span class="kpi-meta">輸入、輸出與快取合計</span></article>
-            <article class="kpi-panel"><span class="eyebrow">EST. COST</span><strong>{{ formatUsd(totalCost) }}</strong><span class="kpi-meta">USD · price {{ data.pricing.version }}</span><span v-if="data.overview.costUsd === null" class="kpi-meta">已計價部分 {{ formatUsd(data.overview.partialCostUsd) }} · 覆蓋 {{ data.overview.costCoverage === null ? '未知' : `${Math.round(data.overview.costCoverage * 100)}%` }}</span></article>
-             <article class="kpi-panel"><span class="eyebrow">EVENTS / SESSIONS</span><strong>{{ formatNumber(data.overview.eventCount) }} / {{ formatNumber(totalSessions) }}</strong><span class="kpi-meta">Events / Unique sessions · {{ visibleSessions.length }} 筆 Session 載入</span></article>
-            <article class="kpi-panel"><span class="eyebrow">CACHE HIT</span><strong>{{ averageCache === null ? '未知' : `${Math.round(averageCache * 100)}%` }}</strong><span class="kpi-meta">覆蓋 {{ data.overview.cacheCoverage === null ? '未知' : `${Math.round(data.overview.cacheCoverage * 100)}%` }} · {{ data.overview.cacheUnreportedEventCount }} 筆未回報</span></article>
+            <article class="kpi-panel"><span class="eyebrow">總 Token</span><strong :title="tokenTitle(totalTokenCount)">{{ formatTokenCount(totalTokenCount) }}</strong><span class="kpi-meta">輸入、輸出與快取合計，用於判斷工作量</span></article>
+            <article class="kpi-panel"><span class="eyebrow">已知成本</span><strong>{{ formatUsd(totalCost) }}</strong><span class="kpi-meta">USD · 套用價格版本 {{ data.pricing.version }}</span><span class="kpi-meta">成本覆蓋率 {{ data.overview.costCoverage === null ? '未知' : `${Math.round(data.overview.costCoverage * 100)}%` }}<template v-if="data.overview.costUsd === null"> · 已知費用 {{ formatUsd(data.overview.partialCostUsd) }}</template></span></article>
+             <article class="kpi-panel"><span class="eyebrow">事件／工作階段</span><strong>{{ formatNumber(data.overview.eventCount) }} / {{ formatNumber(totalSessions) }}</strong><span class="kpi-meta">事件 · 不重複工作階段 · 已載入 {{ visibleSessions.length }} 筆</span></article>
+            <article class="kpi-panel"><span class="eyebrow">快取命中率</span><strong>{{ averageCache === null ? '未知' : `${Math.round(averageCache * 100)}%` }}</strong><span class="kpi-meta">資料覆蓋 {{ data.overview.cacheCoverage === null ? '未知' : `${Math.round(data.overview.cacheCoverage * 100)}%` }} · {{ data.overview.cacheUnreportedEventCount }} 筆未回報</span></article>
           </section>
 
           <div class="evidence-grid">
-             <section class="panel trend-panel" aria-labelledby="trend-heading"><div class="panel-header"><div><span class="eyebrow">TOKEN TREND</span><h3 id="trend-heading">趨勢</h3><p>顯示這段時間的 token 使用趨勢</p></div><div class="trend-controls" role="group" aria-label="趨勢時間間距"><button v-for="option in trendOptions" :key="option" type="button" :class="{ selected: trendInterval === option }" :aria-pressed="trendInterval === option" @click="trendInterval = option; void refresh()">{{ trendIntervalLabel(option) }}</button></div></div><div v-if="data.trend.length" class="chart-wrap"><svg class="daily-chart trend-chart" viewBox="0 0 620 180" role="img" aria-label="Token 使用量趨勢折線圖"><line x1="24" y1="150" x2="600" y2="150" class="chart-rule" /><polyline :points="data.trend.map((point, index) => `${28 + index * (560 / Math.max(data.trend.length - 1, 1))},${150 - (point.tokens / maxTrendTokens) * 112}`).join(' ')" class="chart-line" /><circle v-for="(point, index) in data.trend" :key="point.bucketStartUtc" :cx="28 + index * (560 / Math.max(data.trend.length - 1, 1))" :cy="150 - (point.tokens / maxTrendTokens) * 112" r="3" class="chart-point" tabindex="0" :title="`${trendLabel(point.bucketStartUtc)} · ${tokenTitle(point.tokens)}`" :aria-label="`${trendLabel(point.bucketStartUtc)} ${tokenTitle(point.tokens)}，${point.eventCount} events`" /></svg><div class="chart-labels trend-labels"><span v-for="point in data.trend" :key="`${point.bucketStartUtc}-label`" :title="tokenTitle(point.tokens)">{{ trendLabel(point.bucketStartUtc) }}</span></div></div><div v-else class="panel-empty">目前範圍沒有趨勢資料</div><div class="stat-strip"><span><b>{{ formatTokenCount(data.trend.reduce((sum, item) => sum + item.tokens, 0)) }}</b> tokens</span><span><b>{{ formatNumber(data.trend.reduce((sum, item) => sum + item.eventCount, 0)) }}</b> events</span><span><b>{{ formatNumber(data.trend.reduce((sum, item) => sum + item.uniqueSessionCount, 0)) }}</b> unique sessions</span><span><b>{{ formatUsd(data.trend.some((item) => item.costUsd === null) ? null : data.trend.reduce((sum, item) => sum + (item.costUsd ?? 0), 0)) }}</b> cost</span></div></section>
+             <section class="panel trend-panel" aria-labelledby="trend-heading"><div class="panel-header"><div><span class="eyebrow">費用與 Token 趨勢</span><h3 id="trend-heading">{{ trendMetric === 'cost' ? '各時段的已知成本' : '各時段的 Token 工作量' }}</h3><p>{{ trendMetric === 'cost' ? '部分定價資料只計入已知費用，並保留覆蓋率' : '用於比較工作量的變化，不代表費用' }}</p></div><div class="trend-controls"><div role="group" aria-label="趨勢指標"><button v-for="option in ([['cost', '已知成本'], ['tokens', 'Token']] as const)" :key="option[0]" type="button" :class="{ selected: trendMetric === option[0] }" :aria-pressed="trendMetric === option[0]" @click="trendMetric = option[0]">{{ option[1] }}</button></div><div role="group" aria-label="趨勢彙總方式"><button v-for="option in ([['daily', '每日'], ['weekly', '每週'], ['monthly', '每月']] as const)" :key="option[0]" type="button" :class="{ selected: trendGranularity === option[0] }" :aria-pressed="trendGranularity === option[0]" @click="trendGranularity = option[0]">{{ option[1] }}</button></div></div></div><div v-if="displayedTrend.length" class="chart-wrap"><svg class="daily-chart trend-chart" viewBox="0 0 620 180" role="img" :aria-label="trendMetric === 'cost' ? '已知成本趨勢折線圖' : 'Token 工作量趨勢折線圖'"><line x1="24" y1="150" x2="600" y2="150" class="chart-rule" /><polyline :points="displayedTrend.map((point, index) => `${28 + index * (560 / Math.max(displayedTrend.length - 1, 1))},${150 - (trendValue(point) / maxTrendValue) * 112}`).join(' ')" class="chart-line" /><circle v-for="(point, index) in displayedTrend" :key="point.bucketStartUtc" :cx="28 + index * (560 / Math.max(displayedTrend.length - 1, 1))" :cy="150 - (trendValue(point) / maxTrendValue) * 112" r="3" class="chart-point" tabindex="0" :title="`${trendLabel(point.bucketStartUtc)} · ${trendValueLabel(point)}`" :aria-label="`${trendLabel(point.bucketStartUtc)} ${trendValueLabel(point)}，${point.eventCount} 筆事件`" /></svg><div class="chart-labels trend-labels"><span v-for="point in displayedTrend" :key="`${point.bucketStartUtc}-label`" :title="trendValueLabel(point)">{{ trendLabel(point.bucketStartUtc) }}</span></div></div><div v-else class="panel-empty">目前範圍沒有趨勢資料</div><div class="stat-strip"><span><b>{{ trendMetric === 'cost' ? formatUsd(displayedTrend.reduce((sum, item) => sum + trendValue(item), 0)) : formatTokenCount(displayedTrend.reduce((sum, item) => sum + item.tokens, 0)) }}</b> {{ trendMetric === 'cost' ? '已知成本' : 'Token' }}</span><span><b>{{ formatNumber(displayedTrend.reduce((sum, item) => sum + item.eventCount, 0)) }}</b> 筆事件</span><span><b>{{ formatNumber(displayedTrend.reduce((sum, item) => sum + item.uniqueSessionCount, 0)) }}</b> 個工作階段</span><span v-if="trendMetric === 'cost'"><b>{{ data.overview.costCoverage === null ? '未知' : `${Math.round(data.overview.costCoverage * 100)}%` }}</b> 成本覆蓋率</span></div></section>
            <section class="panel heatmap-panel" aria-labelledby="heatmap-heading"><div class="panel-header"><div><span class="eyebrow">ACTIVITY MAP</span><h3 id="heatmap-heading">日期熱力圖</h3></div><span class="mono">tokens / day</span></div><div class="heatmap" role="grid" aria-label="每日 token 熱力圖"><button v-for="day in heatmapDays" :key="day.date" class="heatmap-cell" :class="[`intensity-${day.intensity}`, { selected: selectedDate === day.date }]" type="button" role="gridcell" :aria-label="`${day.date} ${tokenTitle(day.tokens)}`" @click="selectDate(day.date)"><span>{{ new Date(`${day.date}T00:00:00`).getDate() }}</span></button></div><div class="heatmap-legend"><span>少</span><i v-for="level in 5" :key="level" :class="`intensity-${level}`"></i><span>多</span></div><div class="panel-footnote">選取日期會將事件日期加入全文搜尋條件</div></section>
           </div>
 
             <section class="panel comparison-panel" aria-label="模型與工具 token 矩形樹狀圖"><div v-if="treemapRects.length" ref="treemapContainer" class="treemap-wrap"><svg class="treemap-chart" :viewBox="treemapViewBox" role="img" aria-label="模型與工具 token 矩形樹狀圖" preserveAspectRatio="none"><defs><clipPath v-for="(rect, index) in treemapRects" :id="`treemap-clip-${index}`" :key="`clip-${rect.node.kind}-${rect.node.name}-${index}`"><rect :x="rect.x + 4" :y="rect.y + 2" :width="Math.max(0, rect.width - 8)" :height="Math.max(0, rect.height - 4)" /></clipPath></defs><g v-for="(rect, index) in treemapRects" :key="`${rect.node.kind}-${rect.node.name}-${rect.x}-${rect.y}`" class="treemap-node" :class="`treemap-depth-${rect.depth}`" @mouseenter="selectTreemapRect(rect)" @focus="selectTreemapRect(rect)" @click="selectTreemapRect(rect)"><rect :x="rect.x" :y="rect.y" :width="rect.width" :height="rect.height" tabindex="0" :aria-label="treemapLabel(rect)" :title="treemapLabel(rect)" rx="2" /><text v-if="rect.width > 48 && rect.height > 24" :x="rect.x + 6" :y="rect.y + 17" :clip-path="`url(#treemap-clip-${index})`">{{ rect.node.name }}</text></g></svg></div><div v-else class="panel-empty">目前範圍沒有模型或工具資料</div><div v-if="selectedTreemapRect" class="treemap-detail" aria-live="polite"><strong>{{ selectedTreemapRect.node.name }}</strong><span>{{ selectedTreemapRect.node.kind === 'model' ? '模型' : '工具' }} · {{ formatTokenCount(selectedTreemapRect.node.tokens) }} tokens</span><span>{{ selectedTreemapRect.node.eventCount }} events · {{ selectedTreemapRect.node.uniqueSessionCount }} sessions · {{ formatUsd(selectedTreemapRect.node.costUsd) }}</span></div></section>
 
-          <section class="panel sessions-panel" aria-labelledby="sessions-heading"><div class="panel-header"><div><span class="eyebrow">SESSION LEDGER</span><h3 id="sessions-heading">Session ledger</h3></div><div class="search-control"><label class="sr-only" for="full-search">搜尋 Session、Turn、Prompt、Response、tool</label><input id="full-search" v-model="searchTerm" type="search" placeholder="搜尋全文" @input="void runSearch()" /><kbd>Ctrl K</kbd></div></div><div v-if="searchTerm" class="search-results" aria-live="polite"><span class="eyebrow">SEARCH RESULTS</span><span>{{ searchError || `${searchResults.length} 筆相符` }}</span><button v-for="result in searchResults" :key="result.itemId" class="result-link" type="button" @click="result.sessionId && selectSession(data.sessions.find((session) => session.id === result.sessionId)!)">{{ result.title }}</button></div><div class="session-list"><button v-for="session in visibleSessions" :key="session.id" class="session-row" :class="{ selected: selectedSessionId === session.id }" type="button" @click="selectSession(session)"><span class="session-main"><strong>{{ session.title }}</strong><span>{{ session.source }} · {{ session.model || '模型未提供' }}<template v-if="session.additionalModelCount"> · + {{ session.additionalModelCount }} 個模型</template><template v-if="session.effort"> · effort {{ session.effort }}<template v-if="session.additionalEffortCount"> · + {{ session.additionalEffortCount }} 種 effort</template></template></span><span class="session-token-summary"><span :title="tokenTitle(inputTokenCount(session.tokens))">Input {{ formatTokenCount(inputTokenCount(session.tokens)) }}</span><span :title="tokenTitle(outputTokenCount(session.tokens))">Output {{ formatTokenCount(outputTokenCount(session.tokens)) }}</span><span :title="tokenTitle(cacheTokenCount(session.tokens))">Cache {{ formatTokenCount(cacheTokenCount(session.tokens)) }}</span><span :title="tokenTitle(totalTokens(session.tokens))">Total {{ formatTokenCount(totalTokens(session.tokens)) }}</span></span></span><span class="session-meta"><span>{{ eventCount(session) }} events</span><span class="mono" :class="{ unknown: session.costUsd === null }">{{ formatUsd(session.costUsd) }}</span></span></button></div></section>
+          <section class="panel sessions-panel" aria-labelledby="sessions-heading"><div class="panel-header"><div><span class="eyebrow">工作階段費用</span><h3 id="sessions-heading">依工作階段追查費用與 Token</h3><p>依已知費用排序；部分定價資料會顯示已知費用與覆蓋率</p></div><div class="search-control"><label class="sr-only" for="full-search">搜尋工作階段、Turn、提示、回應或工具</label><input id="full-search" v-model="searchTerm" type="search" placeholder="搜尋工作階段、提示或工具" @input="void runSearch()" /><kbd>Ctrl K</kbd></div></div><div v-if="searchTerm" class="search-results" aria-live="polite"><span class="eyebrow">搜尋結果</span><span>{{ searchError || `${searchResults.length} 筆相符` }}</span><button v-for="result in searchResults" :key="result.itemId" class="result-link" type="button" @click="result.sessionId && selectSession(data.sessions.find((session) => session.id === result.sessionId)!)">{{ result.title }}</button></div><div class="session-list"><button v-for="session in visibleSessions" :key="session.id" class="session-row" :class="{ selected: selectedSessionId === session.id }" type="button" @click="selectSession(session)"><span class="session-main"><strong>{{ session.workspaceId || session.title }}</strong><span>{{ formatSessionStartedAt(session.startedAt) }} · {{ session.source }} · {{ session.model || '模型未提供' }}<template v-if="session.additionalModelCount"> · + {{ session.additionalModelCount }} 個模型</template><template v-if="session.effort"> · 推理強度 {{ session.effort }}<template v-if="session.additionalEffortCount"> · + {{ session.additionalEffortCount }} 種設定</template></template></span><span class="session-token-summary"><span :title="tokenTitle(inputTokenCount(session.tokens))">輸入 {{ formatTokenCount(inputTokenCount(session.tokens)) }}</span><span :title="tokenTitle(outputTokenCount(session.tokens))">輸出 {{ formatTokenCount(outputTokenCount(session.tokens)) }}</span><span :title="tokenTitle(cacheTokenCount(session.tokens))">快取 {{ formatTokenCount(cacheTokenCount(session.tokens)) }}</span><span :title="tokenTitle(totalTokens(session.tokens))">合計 {{ formatTokenCount(totalTokens(session.tokens)) }}</span></span></span><span class="session-meta"><span>{{ eventCount(session) }} 筆事件</span><span class="mono" :class="{ unknown: session.costUsd === null }" :title="sessionCostLabel(session)">{{ sessionCostLabel(session) }}</span></span></button></div></section>
 
-          <section v-if="selectedSession" class="panel timeline-panel" aria-labelledby="timeline-heading"><div class="panel-header"><div><span class="eyebrow">SESSION · TURN · EVENT</span><h3 id="timeline-heading">{{ selectedSession.title }}</h3><p>{{ selectedSession.startedAt }} — {{ selectedSession.endedAt }} · {{ selectedSession.source }} · {{ selectedSession.model || '模型未提供' }}</p></div><div class="tag-list"><span v-for="tag in selectedSession.tags" :key="tag" class="tag">{{ tag }} <button type="button" :aria-label="`移除標籤 ${tag}`" @click="removeTag(tag)">移除</button></span></div></div><div class="timeline"><div v-for="turn in selectedSession.turns" :key="turn.id" class="turn-block"><div class="turn-label"><span class="turn-number">{{ turn.number }}</span><span>Turn {{ turn.number }}</span><span class="mono">{{ formatTokenCount(totalTokens(turn.tokens)) }} tokens</span></div><div class="event-list"><button v-for="event in turn.events" :key="event.id" class="event-row" :class="[eventClass(event.kind), { selected: selectedEventId === event.id }]" type="button" @click="selectedEventId = event.id"><span class="event-kind">{{ event.label }}</span><span class="event-summary">{{ event.summary }}</span><span class="mono">{{ event.tokens ? formatTokenCount(event.tokens) : '—' }}</span></button></div></div></div><div v-if="selectedEvent" class="event-detail"><span class="eyebrow">EVENT DETAIL</span><strong>{{ selectedEvent.label }} · {{ selectedEvent.timestamp }}</strong><p>{{ selectedEvent.detail ?? selectedEvent.summary }}</p><div class="event-reveal-grid"><div v-for="field in (['prompt', 'response', 'payload'] as const)" :key="field" class="event-reveal"><button class="button button-secondary" type="button" @click="void revealEventField(field)">{{ revealedEventFields[`${selectedEvent.id}:${field}`] !== undefined ? `收合 ${field}` : `展開 ${field}` }}</button><span v-if="revealingEventFields[`${selectedEvent.id}:${field}`]">讀取中…</span><pre v-else-if="revealedEventFields[`${selectedEvent.id}:${field}`] !== undefined">{{ revealedEventFields[`${selectedEvent.id}:${field}`] }}</pre></div></div></div><div class="tag-editor"><label for="tag-input">新增 tag<input id="tag-input" v-model="tagInput" placeholder="例如 review" @keyup.enter="addTag" /></label><label>Scope<select v-model="tagScope"><option value="session">Session</option><option value="project">Project</option><option value="source">Source</option></select></label><label>Entity target<input v-model="tagEntityId" :placeholder="tagScope === 'session' ? selectedSession.id : 'source-or-project-id'" /></label><label>Value<input v-model="tagValue" placeholder="可選值" /></label><button class="button button-secondary" type="button" @click="addTag">加入</button></div></section>
-            <section class="panel monthly-panel" aria-labelledby="monthly-heading"><div class="panel-header"><div><span class="eyebrow">MONTHLY ROLLUP</span><h3 id="monthly-heading">月統計</h3></div><span class="mono">{{ data.overview.timeZoneId }} month boundary</span></div><div class="monthly-list"><div v-for="month in data.monthly" :key="month.date" class="monthly-row"><strong>{{ month.date.slice(0, 7) }}</strong><span class="mono">{{ formatTokenCount(month.tokens) }} tokens</span><span>{{ month.eventCount }} events · {{ month.uniqueSessionCount }} unique sessions · {{ month.turnCount }} turns</span><span class="mono" :class="{ unknown: month.costUsd === null }">{{ formatUsd(month.costUsd) }}</span><span>{{ month.cacheHitRate === null ? '未知快取' : `${Math.round(month.cacheHitRate * 100)}% cache` }}</span></div></div></section>
+          <section v-if="selectedSession" class="panel timeline-panel" aria-labelledby="timeline-heading"><div class="panel-header"><div><span class="eyebrow">工作階段 · Turn · 事件</span><h3 id="timeline-heading">{{ selectedSession.title }}</h3><p>{{ selectedSession.startedAt }} — {{ selectedSession.endedAt }} · {{ selectedSession.source }} · {{ selectedSession.model || '模型未提供' }}</p></div><div class="tag-list"><span v-for="tag in selectedSession.tags" :key="tag" class="tag">{{ tag }} <button type="button" :aria-label="`移除標籤 ${tag}`" @click="removeTag(tag)">移除</button></span></div></div><div class="timeline"><div v-for="turn in selectedSession.turns" :key="turn.id" class="turn-block"><div class="turn-label"><span class="turn-number">{{ turn.number }}</span><span>第 {{ turn.number }} 個 Turn</span><span class="mono">{{ formatTokenCount(totalTokens(turn.tokens)) }} Token</span></div><div class="event-list"><button v-for="event in turn.events" :key="event.id" class="event-row" :class="[eventClass(event.kind), { selected: selectedEventId === event.id }]" type="button" @click="selectedEventId = event.id"><span class="event-kind">{{ event.label }}</span><span class="event-summary">{{ event.summary }}</span><span class="mono">{{ event.tokens ? formatTokenCount(event.tokens) : '—' }}</span></button></div></div></div><div v-if="selectedEvent" class="event-detail"><span class="eyebrow">事件明細</span><strong>{{ selectedEvent.label }} · {{ selectedEvent.timestamp }}</strong><p>{{ selectedEvent.detail ?? selectedEvent.summary }}</p><div class="event-reveal-grid"><div v-for="field in (['prompt', 'response', 'payload'] as const)" :key="field" class="event-reveal"><button class="button button-secondary" type="button" @click="void revealEventField(field)">{{ revealedEventFields[`${selectedEvent.id}:${field}`] !== undefined ? `收合 ${field}` : `展開 ${field}` }}</button><span v-if="revealingEventFields[`${selectedEvent.id}:${field}`]">讀取中…</span><pre v-else-if="revealedEventFields[`${selectedEvent.id}:${field}`] !== undefined">{{ revealedEventFields[`${selectedEvent.id}:${field}`] }}</pre></div></div></div><div class="tag-editor"><label for="tag-input">新增標籤<input id="tag-input" v-model="tagInput" placeholder="例如 review" @keyup.enter="addTag" /></label><label>套用範圍<select v-model="tagScope"><option value="session">工作階段</option><option value="project">專案</option><option value="source">來源</option></select></label><label>套用目標<input v-model="tagEntityId" :placeholder="tagScope === 'session' ? selectedSession.id : '來源或專案 ID'" /></label><label>標籤值<input v-model="tagValue" placeholder="可選" /></label><button class="button button-secondary" type="button" @click="addTag">加入</button></div></section>
+            <section class="panel monthly-panel" aria-labelledby="monthly-heading"><div class="panel-header"><div><span class="eyebrow">每月彙總</span><h3 id="monthly-heading">每月費用與工作量</h3></div><span class="mono">以 {{ data.overview.timeZoneId }} 劃分月份</span></div><div class="monthly-list"><div v-for="month in data.monthly" :key="month.date" class="monthly-row"><strong>{{ month.date.slice(0, 7) }}</strong><span class="mono">{{ formatTokenCount(month.tokens) }} Token</span><span>{{ month.eventCount }} 筆事件 · {{ month.uniqueSessionCount }} 個工作階段 · {{ month.turnCount }} 個 Turn</span><span class="mono" :class="{ unknown: month.costUsd === null }">{{ formatUsd(month.costUsd) }}</span><span>{{ month.cacheHitRate === null ? '快取資料未知' : `快取命中 ${Math.round(month.cacheHitRate * 100)}%` }}</span></div></div></section>
         </template>
       </main>
 
       <aside class="inspector" aria-label="選取資料檢視器">
-        <div class="inspector-heading"><span class="eyebrow">RIGHT INSPECTOR</span><h2>{{ selectedSession ? 'Selected session' : 'Data inspector' }}</h2><p>{{ selectedSession ? selectedSession.id : '選取一筆 Session 查看詳細資料' }}</p></div>
-        <nav class="inspector-tabs" aria-label="檢視器分頁"><button v-for="tab in ([['detail', 'Detail'], ['stats', 'Stat'], ['capabilities', 'Capabilities']] as const)" :key="tab[0]" type="button" :class="{ active: inspectorTab === tab[0] }" @click="inspectorTab = tab[0]">{{ tab[1] }}</button></nav>
-         <div v-if="inspectorTab === 'detail'" class="inspector-content"><template v-if="selectedSession"><section class="inspector-section"><span class="eyebrow">TOKEN DETAIL</span><h3>{{ selectedSession.model || '模型未提供' }}</h3><p v-if="selectedSession.effort" class="mono">effort {{ selectedSession.effort }}</p><dl class="detail-list"><div><dt>Input</dt><dd class="mono">{{ formatTokenCount(inputTokenCount(selectedSession.tokens)) }}</dd></div><div><dt>Output</dt><dd class="mono">{{ formatTokenCount(outputTokenCount(selectedSession.tokens)) }}</dd></div><div><dt>Cache</dt><dd class="mono">{{ formatTokenCount(cacheTokenCount(selectedSession.tokens)) }}</dd></div><div><dt>Total</dt><dd class="mono">{{ formatTokenCount(totalTokens(selectedSession.tokens)) }}</dd></div><div><dt>Cost</dt><dd class="mono" :class="{ unknown: selectedSession.costUsd === null }">{{ formatUsd(selectedSession.costUsd) }}</dd></div></dl></section><section class="inspector-section"><span class="eyebrow">SOURCE CONTEXT</span><p>{{ selectedSession.source }} · {{ selectedSession.tool }}</p><p class="mono">Started {{ selectedSession.startedAt }}</p><p class="mono">Ended {{ selectedSession.endedAt }}</p></section></template><div v-else class="inspector-empty">從 Session ledger 選取資料後，這裡會顯示 token breakdown 與來源時間</div></div>
+        <div class="inspector-heading"><span class="eyebrow">詳細資料</span><h2>{{ selectedSession ? '已選取的工作階段' : '資料檢視器' }}</h2><p>{{ selectedSession ? `工作階段 ID：${selectedSession.id}` : '從工作階段費用清單選取一筆資料，查看 Token 與成本明細' }}</p></div>
+        <nav class="inspector-tabs" aria-label="檢視器分頁"><button v-for="tab in ([['detail', '明細'], ['stats', '定價'], ['capabilities', '功能']] as const)" :key="tab[0]" type="button" :class="{ active: inspectorTab === tab[0] }" @click="inspectorTab = tab[0]">{{ tab[1] }}</button></nav>
+         <div v-if="inspectorTab === 'detail'" class="inspector-content"><template v-if="selectedSession"><section class="inspector-section"><span class="eyebrow">Token 明細</span><h3>{{ selectedSession.model || '模型未提供' }}</h3><p v-if="selectedSession.effort" class="mono">推理強度 {{ selectedSession.effort }}</p><dl class="detail-list"><div><dt>輸入</dt><dd class="mono">{{ formatTokenCount(inputTokenCount(selectedSession.tokens)) }}</dd></div><div><dt>輸出</dt><dd class="mono">{{ formatTokenCount(outputTokenCount(selectedSession.tokens)) }}</dd></div><div><dt>快取</dt><dd class="mono">{{ formatTokenCount(cacheTokenCount(selectedSession.tokens)) }}</dd></div><div><dt>合計</dt><dd class="mono">{{ formatTokenCount(totalTokens(selectedSession.tokens)) }}</dd></div><div><dt>已知成本</dt><dd class="mono" :class="{ unknown: selectedSession.costUsd === null }">{{ sessionCostLabel(selectedSession) }}</dd></div><div v-if="selectedSession.costUsd === null"><dt>成本覆蓋率</dt><dd class="mono">{{ costCoverageLabel(selectedSession.costCoverage) }}</dd></div></dl></section><section class="inspector-section"><span class="eyebrow">來源與時間</span><p>{{ selectedSession.source }} · {{ selectedSession.tool }}</p><p class="mono">開始 {{ selectedSession.startedAt }}</p><p class="mono">結束 {{ selectedSession.endedAt }}</p></section></template><div v-else class="inspector-empty">從工作階段費用清單選取資料後，這裡會顯示 Token 明細、已知成本與來源時間</div></div>
         <div v-else-if="inspectorTab === 'stats'" class="inspector-content"><section class="inspector-section"><span class="eyebrow">PRICING VERSION</span><h3>{{ data.pricing.version }}</h3><dl class="detail-list"><div><dt>Effective from</dt><dd class="mono">{{ data.pricing.effectiveFrom }}</dd></div><div><dt>Unknown price</dt><dd class="unknown mono">{{ data.pricing.unknownCount }}</dd></div><div><dt>Overrides</dt><dd class="mono">{{ data.pricing.overrideCount }}</dd></div></dl></section><section class="inspector-section"><span class="eyebrow">PRICE OVERRIDE</span><label>Provider<input v-model="pricingProvider" placeholder="openai" /></label><label>Model<input v-model="pricingModel" placeholder="gpt-5-codex" /></label><label>Token type<select v-model="pricingTokenType"><option v-for="tokenType in data.tokenTypes" :key="tokenType" :value="tokenType">{{ tokenType }}</option></select></label><label>Mode<input v-model="pricingMode" placeholder="standard" /></label><label>USD / MTok<input v-model="pricingAmount" inputmode="decimal" placeholder="3.00" /></label><label>Effective from<input v-model="pricingEffectiveFrom" type="date" /></label><label>Effective to<input v-model="pricingEffectiveTo" type="date" /></label><label>Min input tokens<input v-model="pricingMinimum" inputmode="numeric" /></label><label>Max input tokens<input v-model="pricingMaximum" inputmode="numeric" placeholder="不限" /></label><button class="button button-primary button-full" type="button" @click="void savePricing()">儲存 override</button><p class="rail-note">有效區間採半開區間；未知價格不會被推估</p></section></div>
         <div v-else class="inspector-content"><section class="inspector-section"><span class="eyebrow">CAPABILITY MAP</span><h3>目前可用能力</h3><ul class="capability-list"><li v-for="capability in data.capabilities" :key="capability">{{ capability }}</li></ul></section><section class="inspector-section"><span class="eyebrow">TAG MANAGEMENT</span><label>Scope<select v-model="tagScope"><option value="session">Session</option><option value="project">Project</option><option value="source">Source</option></select></label><label>Entity target<input v-model="tagEntityId" :placeholder="tagScope === 'session' ? selectedSession?.id ?? 'session-id' : 'source-or-project-id'" /></label><label>Tag key<input id="tag-management-input" v-model="tagInput" placeholder="例如 review" @keyup.enter="addTag" /></label><label>Value<input v-model="tagValue" placeholder="可選值" /></label><button class="button button-secondary" type="button" @click="addTag">新增 tag</button><div class="tag-assignment-list"><div v-for="assignment in data.tags" :key="`${assignment.scope}-${assignment.entityId}-${assignment.id || assignment.key}`" class="tag-assignment"><span class="tag tag-neutral">{{ assignment.key }}<span v-if="assignment.value">={{ assignment.value }}</span></span><span class="mono">{{ assignment.scope }} / {{ assignment.entityId }}</span><button type="button" :aria-label="`刪除 ${assignment.key} tag`" @click="removeAssignment(assignment)">刪除</button></div><span v-if="!data.tags.length" class="rail-note">目前沒有 tag assignment</span></div></section><section class="inspector-section"><span class="eyebrow">TAGS</span><div class="tag-list"><span v-for="tag in allTags" :key="tag" class="tag tag-neutral">{{ tag }}</span></div></section></div>
         <div class="inspector-footer"><span class="eyebrow">SESSION STORAGE</span><p>Startup fragment key 讀取後立即移除，API 只使用 <code>X-Token-Dashboard-Key</code></p></div>
