@@ -30,3 +30,5 @@ export/
 *.parquet
 
 artifacts/
+
+.codex/environments/runtime/
