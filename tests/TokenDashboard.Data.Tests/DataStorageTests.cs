@@ -123,12 +123,12 @@ public sealed class DataStorageTests
         }
 
         var claudeAppPaths = new ClaudeCodeAppAdapter().DiscoverPaths(options).Select(candidate => candidate.Path).ToArray();
-        Assert.Contains(@"C:\SyntheticHome\.claude\projects", claudeAppPaths);
-        Assert.Contains(@"C:\SyntheticHome\.claude\sessions", claudeAppPaths);
-        Assert.Contains(@"C:\SyntheticAppData\Claude", claudeAppPaths);
+        Assert.Contains(Path.Combine(options.UserHome, ".claude", "projects"), claudeAppPaths);
+        Assert.Contains(Path.Combine(options.UserHome, ".claude", "sessions"), claudeAppPaths);
+        Assert.Contains(Path.Combine(options.AppData!, "Claude"), claudeAppPaths);
         var codexPaths = new CodexCliAdapter().DiscoverPaths(options).Select(candidate => candidate.Path).ToArray();
-        Assert.Contains(@"C:\SyntheticHome\.codex\sessions", codexPaths);
-        Assert.Contains(@"C:\SyntheticHome\.codex\archived_sessions", codexPaths);
+        Assert.Contains(Path.Combine(options.UserHome, ".codex", "sessions"), codexPaths);
+        Assert.Contains(Path.Combine(options.UserHome, ".codex", "archived_sessions"), codexPaths);
     }
 
     [Fact]

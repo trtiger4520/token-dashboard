@@ -485,16 +485,21 @@ public sealed class ApiIntegrationTests
     {
         var root = Path.Combine(Path.GetTempPath(), $"token-dashboard-discovery-{Guid.NewGuid():N}");
         var appData = Path.Combine(root, "appdata");
+        var claudeAppRoot = OperatingSystem.IsWindows()
+            ? Path.Combine(appData, "Claude")
+            : OperatingSystem.IsMacOS()
+                ? Path.Combine(root, "Library", "Application Support", "Claude")
+                : Path.Combine(root, ".config", "Claude");
         Directory.CreateDirectory(Path.Combine(root, ".claude", "projects", "nested"));
         Directory.CreateDirectory(Path.Combine(root, ".codex", "sessions"));
         Directory.CreateDirectory(Path.Combine(root, ".codex", "archived_sessions"));
-        Directory.CreateDirectory(Path.Combine(appData, "Claude", "logs"));
+        Directory.CreateDirectory(Path.Combine(claudeAppRoot, "logs"));
         try
         {
             WriteFile(Path.Combine(root, ".claude", "projects", "nested", "claude-cli.json"), EventJson("claude-cli-source", "claude-cli-session", "claude-cli-turn"));
             WriteFile(Path.Combine(root, ".codex", "sessions", "codex-app.jsonl"), EventJson("codex-app-source", "codex-app-session", "codex-app-turn"));
             WriteFile(Path.Combine(root, ".codex", "archived_sessions", "codex-cli.csv"), "source_id,session_id,turn_id,occurred_at_utc,input_tokens\ncodex-cli-source,codex-cli-session,codex-cli-turn,2026-07-10T00:00:00Z,1\n");
-            WriteFile(Path.Combine(appData, "Claude", "logs", "claude-app.json"), EventJson("claude-app-source", "claude-app-session", "claude-app-turn"));
+            WriteFile(Path.Combine(claudeAppRoot, "logs", "claude-app.json"), EventJson("claude-app-source", "claude-app-session", "claude-app-turn"));
             WriteFile(Path.Combine(root, ".codex", "sessions", "skip.txt"), "not supported");
 
             using var factory = new ApiFactory { SourceHome = root, SourceAppData = appData };
