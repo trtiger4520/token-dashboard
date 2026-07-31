@@ -610,7 +610,7 @@ public sealed record PriceCatalogEntry(
 
 public static class BuiltInPricingCatalog
 {
-    public const string Version = "2026-07-28";
+    public const string Version = "2026-07-31";
 
     private const string OpenAiUrl = "https://developers.openai.com/api/docs/pricing";
     private const string AnthropicUrl = "https://platform.claude.com/docs/en/about-claude/pricing";
@@ -625,23 +625,22 @@ public static class BuiltInPricingCatalog
     {
         var models = new[]
         {
-            new ModelRate("gpt-5.6-sol", 5m, 30m, 0.50m, 6.25m, 10m, 60m, 1m, 12.50m, 272000, 10m, 60m, 1m, 12.50m),
-            new ModelRate("gpt-5.6-terra", 2.50m, 15m, 0.25m, 3.125m, 5m, 30m, 0.50m, 6.25m, 272000, 5m, 30m, 0.50m, 6.25m),
-            new ModelRate("gpt-5.6-luna", 1m, 6m, 0.10m, 1.25m, 2m, 12m, 0.20m, 2.50m, 272000, 2m, 12m, 0.20m, 2.50m),
-            new ModelRate("gpt-5.5", 5m, 30m, 0.50m, null, 10m, 75m, 1.25m, null, 272000, 12.50m, 75m, 1.25m, null),
-            new ModelRate("gpt-5.5-pro", 30m, 180m, null, null, 60m, 270m, null, null, 272000),
-            new ModelRate("gpt-5.4", 2.50m, 15m, 0.25m, null, 5m, 22.50m, 0.50m, null, 272000, 5m, 30m, 0.50m, null),
-            new ModelRate("gpt-5.4-mini", 0.75m, 4.50m, 0.075m, null, null, null, null, null, 272000, 1.50m, 9m, 0.15m, null),
-            new ModelRate("gpt-5.4-nano", 0.20m, 1.25m, 0.02m, null, null, null, null, null, 272000),
-            new ModelRate("gpt-5.4-pro", 30m, 180m, null, null, 60m, 270m, null, null, 272000)
+            new ModelRate("gpt-5.6-sol", "2026-07-09", 5m, 30m, 0.50m, 6.25m, 10m, 60m, 1m, 12.50m, 272000, 10m, 60m, 1m, 12.50m),
+            new ModelRate("gpt-5.6-terra", "2026-07-09", 2.50m, 15m, 0.25m, 3.125m, 5m, 30m, 0.50m, 6.25m, 272000, 5m, 30m, 0.50m, 6.25m),
+            new ModelRate("gpt-5.6-luna", "2026-07-09", 1m, 6m, 0.10m, 1.25m, 2m, 12m, 0.20m, 2.50m, 272000, 2m, 12m, 0.20m, 2.50m),
+            new ModelRate("gpt-5.6-terra", "2026-07-31", 2m, 12m, 0.20m, 2.50m, 4m, 18m, 0.40m, 5m, 272000, 4m, 24m, 0.40m, 5m),
+            new ModelRate("gpt-5.6-luna", "2026-07-31", 0.20m, 1.20m, 0.02m, 0.25m, 0.40m, 1.80m, 0.04m, 0.50m, 272000, 0.40m, 2.40m, 0.04m, 0.50m),
+            new ModelRate("gpt-5.5", "2026-04-23", 5m, 30m, 0.50m, null, 10m, 75m, 1.25m, null, 272000, 12.50m, 75m, 1.25m, null),
+            new ModelRate("gpt-5.5-pro", "2026-04-23", 30m, 180m, null, null, 60m, 270m, null, null, 272000),
+            new ModelRate("gpt-5.4", "2026-03-05", 2.50m, 15m, 0.25m, null, 5m, 22.50m, 0.50m, null, 272000, 5m, 30m, 0.50m, null),
+            new ModelRate("gpt-5.4-mini", "2026-03-05", 0.75m, 4.50m, 0.075m, null, null, null, null, null, 272000, 1.50m, 9m, 0.15m, null),
+            new ModelRate("gpt-5.4-nano", "2026-03-05", 0.20m, 1.25m, 0.02m, null, null, null, null, null, 272000),
+            new ModelRate("gpt-5.4-pro", "2026-03-05", 30m, 180m, null, null, 60m, 270m, null, null, 272000)
         };
 
         foreach (var model in models)
         {
-            var effectiveDate = model.Model == "gpt-5.4" || model.Model == "gpt-5.4-mini" || model.Model == "gpt-5.4-nano" || model.Model == "gpt-5.4-pro"
-                ? "2026-03-05"
-                : model.Model == "gpt-5.5" || model.Model == "gpt-5.5-pro" ? "2026-04-23" : "2026-07-09";
-            foreach (var entry in ModelEntries("openai", model, effectiveDate, OpenAiUrl, 272000)) yield return entry;
+            foreach (var entry in ModelEntries("openai", model, model.EffectiveDate, OpenAiUrl, 272000)) yield return entry;
         }
     }
 
@@ -686,9 +685,9 @@ public static class BuiltInPricingCatalog
             foreach (var entry in TokenEntries(provider, model.Model, "batch-long-context-1m", model.LongInput.Value / 2, model.LongOutput.Value / 2, model.LongCachedInput / 2, model.LongCacheWrite / 2, longContextThreshold, null, effectiveDate, sourceUrl)) yield return entry;
         }
 
-        if (model.PriorityInput is not null)
+        if (model.FastInput is not null)
         {
-            foreach (var entry in TokenEntries(provider, model.Model, "priority", model.PriorityInput.Value, model.PriorityOutput!.Value, model.PriorityCachedInput, model.PriorityCacheWrite, 0, model.StandardMaximum, effectiveDate, sourceUrl)) yield return entry;
+            foreach (var entry in TokenEntries(provider, model.Model, PricingMode.Fast, model.FastInput.Value, model.FastOutput!.Value, model.FastCachedInput, model.FastCacheWrite, 0, model.StandardMaximum, effectiveDate, sourceUrl)) yield return entry;
         }
     }
 
@@ -720,6 +719,7 @@ public static class BuiltInPricingCatalog
 
     private sealed record ModelRate(
         string Model,
+        string EffectiveDate,
         decimal Input,
         decimal Output,
         decimal? CachedInput,
@@ -729,10 +729,10 @@ public static class BuiltInPricingCatalog
         decimal? LongCachedInput,
         decimal? LongCacheWrite,
         int StandardMaximum,
-        decimal? PriorityInput = null,
-        decimal? PriorityOutput = null,
-        decimal? PriorityCachedInput = null,
-        decimal? PriorityCacheWrite = null);
+        decimal? FastInput = null,
+        decimal? FastOutput = null,
+        decimal? FastCachedInput = null,
+        decimal? FastCacheWrite = null);
 
     private sealed record AnthropicRate(string Model, decimal Input, decimal Output);
 
@@ -746,7 +746,7 @@ public static class BuiltInPricingCatalog
         var normalizedProvider = provider.Trim();
         var normalizedModel = model.Trim();
         var normalizedTokenType = TokenTypeNormalizer.Normalize(tokenType);
-        var normalizedMode = string.IsNullOrWhiteSpace(mode) ? "standard" : mode.Trim();
+        var normalizedMode = string.IsNullOrWhiteSpace(mode) ? "standard" : PricingMode.Normalize(mode);
         var tokenCandidates = TokenTypeNormalizer.PricingVariants(normalizedTokenType).ToList();
         if (normalizedTokenType == "reasoning") tokenCandidates.Add("output");
 
@@ -754,7 +754,7 @@ public static class BuiltInPricingCatalog
             .Where(entry => string.Equals(entry.Provider, normalizedProvider, StringComparison.OrdinalIgnoreCase))
             .Where(entry => ModelsMatch(normalizedProvider, normalizedModel, entry.Model))
             .Where(entry => tokenCandidates.Contains(TokenTypeNormalizer.Normalize(entry.TokenType), StringComparer.OrdinalIgnoreCase))
-            .Where(entry => string.Equals(entry.Mode, normalizedMode, StringComparison.OrdinalIgnoreCase)
+            .Where(entry => string.Equals(PricingMode.Normalize(entry.Mode), normalizedMode, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(normalizedMode, "standard", StringComparison.OrdinalIgnoreCase) && string.Equals(entry.Mode, "long-context-1m", StringComparison.OrdinalIgnoreCase))
             .Where(entry => totalInputTokens >= entry.MinimumInputTokens && (entry.MaximumInputTokens is null || totalInputTokens < entry.MaximumInputTokens))
             .OrderByDescending(entry => DateTimeOffset.Parse(entry.EffectiveDate, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal))
@@ -796,15 +796,17 @@ public static class BuiltInPricingCatalog
 
     public static PriceCatalogEntry? Find(string provider, string model, string tokenType, DateTimeOffset atUtc, long totalInputTokens, string? mode = null)
     {
+        var normalizedMode = PricingMode.Normalize(mode);
         return Entries.Where(item => string.Equals(item.Provider, provider, StringComparison.OrdinalIgnoreCase) &&
                                      string.Equals(item.Model, model, StringComparison.OrdinalIgnoreCase) &&
                                      TokenTypeNormalizer.PricingVariants(tokenType).Contains(TokenTypeNormalizer.Normalize(item.TokenType), StringComparer.OrdinalIgnoreCase) &&
                                      DateTimeOffset.TryParse(item.EffectiveDate, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var effectiveFrom) &&
                                      effectiveFrom <= atUtc.ToUniversalTime() &&
-                                     (string.IsNullOrWhiteSpace(mode) || string.Equals(item.Mode, mode, StringComparison.OrdinalIgnoreCase) || (string.Equals(mode, "standard", StringComparison.OrdinalIgnoreCase) && string.Equals(item.Mode, "standard", StringComparison.OrdinalIgnoreCase))) &&
+                                     (string.IsNullOrWhiteSpace(normalizedMode) || string.Equals(PricingMode.Normalize(item.Mode), normalizedMode, StringComparison.OrdinalIgnoreCase)) &&
                                      totalInputTokens >= item.MinimumInputTokens &&
                                      (item.MaximumInputTokens is null || totalInputTokens < item.MaximumInputTokens))
-            .OrderByDescending(item => item.MinimumInputTokens)
+            .OrderByDescending(item => DateTimeOffset.Parse(item.EffectiveDate, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal))
+            .ThenByDescending(item => item.MinimumInputTokens)
             .FirstOrDefault();
     }
 }
@@ -821,7 +823,7 @@ public sealed class PricingResolver
         var normalizedModel = model.Trim();
         var allowedModes = string.IsNullOrWhiteSpace(mode)
             ? new[] { "standard", "long-context-1m" }
-            : [mode.Trim()];
+            : [PricingMode.Normalize(mode)];
         var variants = TokenTypeNormalizer.PricingVariants(tokenType);
         var custom = data.Query(
             """
@@ -838,7 +840,7 @@ public sealed class PricingResolver
             ("$model", normalizedModel),
             ("$eventUtc", eventUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)),
             ("$totalInputTokens", totalInputTokens))
-            .Where(row => variants.Contains(String(row, "token_type"), StringComparer.OrdinalIgnoreCase) && allowedModes.Contains(String(row, "mode"), StringComparer.OrdinalIgnoreCase))
+            .Where(row => variants.Contains(String(row, "token_type"), StringComparer.OrdinalIgnoreCase) && allowedModes.Contains(PricingMode.Normalize(String(row, "mode")), StringComparer.OrdinalIgnoreCase))
             .OrderByDescending(row => DateTimeOffset.Parse(String(row, "effective_from_utc"), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind))
             .ThenByDescending(row => Long(row, "minimum_input_tokens"))
             .FirstOrDefault();

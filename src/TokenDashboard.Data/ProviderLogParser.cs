@@ -158,6 +158,7 @@ internal static class ProviderLogParser
 
         var modelsByTurn = new Dictionary<string, string>(StringComparer.Ordinal);
         var effortsByTurn = new Dictionary<string, string>(StringComparer.Ordinal);
+        var modesByTurn = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var item in lines)
         {
             if (!string.Equals(GetString(item.Element, "type"), "turn_context", StringComparison.Ordinal) ||
@@ -169,6 +170,7 @@ internal static class ProviderLogParser
             var turnId = GetString(payload, "turn_id");
             var model = GetString(payload, "model");
             var effort = GetString(payload, "reasoning_effort", "effort");
+            var mode = NormalizeMode(GetString(payload, "service_tier", "mode"));
             if (!string.IsNullOrWhiteSpace(turnId) && !string.IsNullOrWhiteSpace(model))
             {
                 modelsByTurn[turnId] = model;
@@ -178,6 +180,11 @@ internal static class ProviderLogParser
             {
                 effortsByTurn[turnId] = effort;
             }
+
+            if (!string.IsNullOrWhiteSpace(turnId) && !string.IsNullOrWhiteSpace(mode))
+            {
+                modesByTurn[turnId] = mode;
+            }
         }
 
         var events = new List<NormalizedEvent>();
@@ -186,6 +193,7 @@ internal static class ProviderLogParser
         string? currentTurnId = null;
         var currentModel = "";
         var currentEffort = "";
+        var currentMode = "";
         var nextSequence = 0;
 
         foreach (var item in lines)
@@ -210,6 +218,7 @@ internal static class ProviderLogParser
                     {
                         currentModel = "";
                         currentEffort = "";
+                        currentMode = "";
                     }
                     if (!turnSequences.ContainsKey(currentTurnId))
                     {
@@ -241,6 +250,20 @@ internal static class ProviderLogParser
                     currentEffort = "";
                 }
 
+                var contextualMode = NormalizeMode(GetString(payload, "service_tier", "mode"));
+                if (!string.IsNullOrWhiteSpace(contextualMode))
+                {
+                    currentMode = contextualMode;
+                }
+                else if (currentTurnId is not null && modesByTurn.TryGetValue(currentTurnId, out var mappedMode))
+                {
+                    currentMode = mappedMode;
+                }
+                else
+                {
+                    currentMode = "";
+                }
+
                 continue;
             }
 
@@ -270,6 +293,9 @@ internal static class ProviderLogParser
             var effort = effortsByTurn.TryGetValue(currentTurnId, out var mappedEffortForEvent)
                 ? mappedEffortForEvent
                 : currentEffort;
+            var mode = modesByTurn.TryGetValue(currentTurnId, out var mappedModeForEvent)
+                ? mappedModeForEvent
+                : currentMode;
             var canonicalPayload = CanonicalPayload(
                 "codex",
                 parsed.EventType,
@@ -281,7 +307,8 @@ internal static class ProviderLogParser
                 "",
                 "",
                 parsed.Tokens,
-                effort);
+                effort,
+                mode);
             events.Add(NormalizedEvent.Create(
                 adapterKind,
                 adapterKind.ToString(),
@@ -576,7 +603,8 @@ internal static class ProviderLogParser
         string subagent,
         string workflow,
         IReadOnlyDictionary<TokenType, long> tokens,
-        string effort = "")
+        string effort = "",
+        string mode = "")
     {
         return JsonSerializer.Serialize(new
         {
@@ -590,8 +618,22 @@ internal static class ProviderLogParser
             subagent,
             workflow,
             effort,
+            mode,
             tokens = tokens.ToDictionary(static pair => pair.Key.Value, static pair => pair.Value, StringComparer.Ordinal)
         });
+    }
+
+    private static string NormalizeMode(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "";
+        }
+
+        var normalized = value.Trim();
+        return string.Equals(normalized, "priority", StringComparison.OrdinalIgnoreCase)
+            ? "fast"
+            : normalized;
     }
 
     private static ParseResult Result(
