@@ -31,7 +31,20 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         shell: bash
-        run: printf '%s\n' "$PR_TITLE" | pnpm exec commitlint
+        run: |
+          normalized_title="$(printf '%s' "$PR_TITLE" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+          if [[ -z "$normalized_title" ]]; then
+            echo "Pull request title must not be empty."
+            exit 1
+          fi
+
+          if [[ "$normalized_title" =~ ^[a-z]+(\([[:alnum:]_.-]+\))?!?:[[:space:]].+ ]]; then
+            title_to_lint="$normalized_title"
+          else
+            title_to_lint="chore: ${normalized_title,}"
+          fi
+
+          printf '%s\n' "$title_to_lint" | pnpm exec commitlint
 
   verify:
     runs-on: ubuntu-24.04
