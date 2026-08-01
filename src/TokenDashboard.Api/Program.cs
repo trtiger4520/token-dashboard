@@ -471,7 +471,7 @@ public static class ProgramEntry
                     return Results.BadRequest(new { error = "fileName must use .json, .jsonl, .ndjson or .csv" });
                 }
 
-                if (maxImportBytes <= 0 || Encoding.UTF8.GetByteCount(request.Content) > maxImportBytes)
+                if (maxImportBytes > 0 && Encoding.UTF8.GetByteCount(request.Content) > maxImportBytes)
                 {
                     return Results.BadRequest(new { error = $"Import content exceeds the configured {maxImportBytes / (1024 * 1024)} MiB limit" });
                 }

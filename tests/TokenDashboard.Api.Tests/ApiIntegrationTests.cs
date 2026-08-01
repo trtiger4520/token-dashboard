@@ -533,6 +533,18 @@ public sealed class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task ContentImportAllowsZeroConfiguredLimit()
+    {
+        using var factory = new ApiFactory { MaxImportBytes = 0 };
+        using var client = factory.CreateAuthenticatedClient();
+        const string content = "{\"source_id\":\"unlimited-source\",\"session_id\":\"unlimited-session\",\"turn_id\":\"unlimited-turn\",\"occurred_at_utc\":\"2026-07-06T00:00:00Z\",\"source_timezone\":\"UTC\",\"prompt\":\"unlimited inline prompt\"}";
+
+        var response = await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", null, "unlimited.json", content));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
     public async Task ProjectTagAssignmentIsSeparateAndTagDeleteRebuildsFts()
     {
         using var factory = new ApiFactory();
@@ -795,6 +807,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
 
     public string? SourceAppData { get; set; }
 
+    public long? MaxImportBytes { get; set; }
+
     protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -803,7 +817,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             ["TokenDashboard:ConnectionString"] = $"Data Source=api-test-{Guid.NewGuid():N};Mode=Memory;Cache=Shared",
             ["TokenDashboard:OpenBrowser"] = "false",
             ["TokenDashboard:SourceHome"] = SourceHome,
-            ["TokenDashboard:SourceAppData"] = SourceAppData
+            ["TokenDashboard:SourceAppData"] = SourceAppData,
+            ["TokenDashboard:MaxImportBytes"] = MaxImportBytes?.ToString(CultureInfo.InvariantCulture)
         }));
     }
 

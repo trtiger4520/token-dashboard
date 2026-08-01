@@ -188,6 +188,21 @@ describe('formal API client contract', () => {
     expect(String(fetchMock.mock.calls[2]?.[0])).toContain('/api/sources/discovery?adapter=codex-cli&path=C%3A%2Flogs')
   })
 
+  it('stops polling when sync does not reach a terminal status before the timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      fetchMock.mockImplementation(async () => jsonResponse({ syncId: 'sync-timeout', status: 'running' }))
+      const pending = new TokenDashboardClient().waitForSync('sync-timeout', 100, 500)
+      const assertion = expect(pending).rejects.toThrow('同步工作等待逾時')
+
+      await vi.advanceTimersByTimeAsync(500)
+
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('passes auto discovery through and normalizes all four adapter results', async () => {
     fetchMock.mockImplementationOnce(async () => jsonResponse([
       { adapter: 'ClaudeCodeApp', capabilities: { adapterKind: 'ClaudeCodeApp', status: 'Available', formats: ['json'], notes: '' }, paths: [{ path: 'C:/claude-app', exists: true }] },
@@ -231,9 +246,14 @@ describe('dashboard API states and interaction surface', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('C:/workspace/token-dashboard')
     await wrapper.get('.session-row').trigger('click')
+    await flushPromises()
     expect(wrapper.find('.session-drawer').exists()).toBe(true)
     expect(wrapper.text()).toContain('SESSION TIMELINE')
     expect(wrapper.text()).toContain('Ctrl K')
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/api/sessions/s1/timeline')).length).toBe(1)
+    await wrapper.get('.session-drawer-content').trigger('scroll')
+    await flushPromises()
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/api/sessions/s1/timeline')).length).toBe(1)
   })
 
   it('switches cost and token trend views while persisting the chosen granularity', async () => {

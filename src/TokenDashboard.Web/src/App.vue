@@ -302,7 +302,7 @@ function selectSession(session: SessionRecord): void {
 }
 
 async function loadTimeline(): Promise<void> {
-  if (!sessionDrawerOpen.value || !selectedSessionId.value || timelineLoading.value || (!timelineHasMore.value && sessionTimeline.value.length > 0)) return
+  if (!sessionDrawerOpen.value || !selectedSessionId.value || timelineLoading.value || !timelineHasMore.value) return
   timelineLoading.value = true
   try {
     const payload = await client.getSessionTimeline(selectedSessionId.value, timelineCursor.value, timelineReveal.value)

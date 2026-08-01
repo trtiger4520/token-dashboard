@@ -525,12 +525,15 @@ export class TokenDashboardClient {
     return (await response.json()) as SyncStatus
   }
 
-  async waitForSync(syncId: string, intervalMs = 500): Promise<SyncStatus> {
-    let delay = intervalMs
+  async waitForSync(syncId: string, intervalMs = 500, timeoutMs = 5 * 60 * 1000): Promise<SyncStatus> {
+    const deadline = Date.now() + Math.max(0, timeoutMs)
+    let delay = Math.max(0, intervalMs)
     for (;;) {
       const status = await this.getSyncStatus(syncId)
       if (['completed', 'partial', 'failed'].includes(status.status)) return status
-      await new Promise((resolve) => window.setTimeout(resolve, delay))
+      const remainingMs = deadline - Date.now()
+      if (remainingMs <= 0) throw new Error('同步工作等待逾時，請稍後重新整理狀態')
+      await new Promise((resolve) => window.setTimeout(resolve, Math.min(delay, remainingMs)))
       delay = Math.min(2000, Math.round(delay * 1.5))
     }
   }
