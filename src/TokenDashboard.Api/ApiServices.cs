@@ -17,7 +17,7 @@ namespace TokenDashboard.Api;
 
 public sealed class ApiOptions
 {
-    public string ConnectionString { get; set; } = "Data Source=token-dashboard.db";
+    public string? ConnectionString { get; set; }
 
     public bool OpenBrowser { get; set; } = true;
 
@@ -274,7 +274,14 @@ public sealed class DashboardStore : IDisposable
 
     public DashboardStore(IOptions<ApiOptions> options)
     {
-        store = new SqliteDataStore(options.Value.ConnectionString);
+        var connectionString = options.Value.ConnectionString;
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            DatabasePaths.EnsureDefaultDataDirectory();
+            connectionString = DatabasePaths.DefaultConnectionString;
+        }
+
+        store = new SqliteDataStore(connectionString);
     }
 
     public T Read<T>(Func<SqliteConnection, T> action)
