@@ -324,13 +324,13 @@ internal static class SourceFileParser
             var extension = Path.GetExtension(path).ToLowerInvariant();
             if (extension is ".json" or ".jsonl" or ".ndjson")
             {
-                using var stream = File.OpenRead(path);
+                using var stream = OpenReadShared(path);
                 return extension == ".json"
                     ? ParseJson(stream, adapterKind, cancellationToken)
                     : ParseJsonLines(stream, adapterKind, cancellationToken);
             }
 
-            using var reader = new StreamReader(File.OpenRead(path));
+            using var reader = new StreamReader(OpenReadShared(path));
             var text = reader.ReadToEnd();
             return extension == ".csv" ? ParseCsv(text, adapterKind, cancellationToken) : ParseFallback(text, adapterKind, cancellationToken);
         }
@@ -345,6 +345,26 @@ internal static class SourceFileParser
         catch (UnauthorizedAccessException)
         {
             return new ParseResult([], [new ParseError(0, "Source path permission was denied")], AdapterCapabilityStatus.PermissionDenied);
+        }
+        catch (IOException)
+        {
+            return new ParseResult([], [new ParseError(0, "Source file is currently in use. Retry after the writer releases it")], AdapterCapabilityStatus.ParseFallback);
+        }
+    }
+
+    private static FileStream OpenReadShared(string path)
+    {
+        const int maxAttempts = 3;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            }
+            catch (IOException) when (attempt < maxAttempts)
+            {
+                Thread.Sleep(50);
+            }
         }
     }
 
