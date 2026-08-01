@@ -321,15 +321,18 @@ internal static class SourceFileParser
 
         try
         {
-            var text = File.ReadAllText(path);
             var extension = Path.GetExtension(path).ToLowerInvariant();
-            return extension switch
+            if (extension is ".json" or ".jsonl" or ".ndjson")
             {
-                ".json" => ParseJson(text, adapterKind, cancellationToken),
-                ".jsonl" or ".ndjson" => ParseJsonLines(text, adapterKind, cancellationToken),
-                ".csv" => ParseCsv(text, adapterKind, cancellationToken),
-                _ => ParseFallback(text, adapterKind, cancellationToken)
-            };
+                using var stream = File.OpenRead(path);
+                return extension == ".json"
+                    ? ParseJson(stream, adapterKind, cancellationToken)
+                    : ParseJsonLines(stream, adapterKind, cancellationToken);
+            }
+
+            using var reader = new StreamReader(File.OpenRead(path));
+            var text = reader.ReadToEnd();
+            return extension == ".csv" ? ParseCsv(text, adapterKind, cancellationToken) : ParseFallback(text, adapterKind, cancellationToken);
         }
         catch (FileNotFoundException)
         {
@@ -352,6 +355,27 @@ internal static class SourceFileParser
             using var document = JsonDocument.Parse(text);
             if (adapterKind is SourceAdapterKind.ClaudeCodeApp or SourceAdapterKind.ClaudeCodeCli &&
                 IsClaudeMetadataDocument(document.RootElement))
+            {
+                return new ParseResult([], [], AdapterCapabilityStatus.Available);
+            }
+
+            var elements = document.RootElement.ValueKind == JsonValueKind.Array
+                ? document.RootElement.EnumerateArray().ToArray()
+                : [document.RootElement];
+            return NormalizeElements(elements, adapterKind, false, cancellationToken);
+        }
+        catch (JsonException exception)
+        {
+            return new ParseResult([], [new ParseError(exception.LineNumber is null ? 0 : checked((int)exception.LineNumber.Value), exception.Message)], AdapterCapabilityStatus.ParseFallback);
+        }
+    }
+
+    private static ParseResult ParseJson(Stream stream, SourceAdapterKind adapterKind, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(stream);
+            if (adapterKind is SourceAdapterKind.ClaudeCodeApp or SourceAdapterKind.ClaudeCodeCli && IsClaudeMetadataDocument(document.RootElement))
             {
                 return new ParseResult([], [], AdapterCapabilityStatus.Available);
             }
@@ -414,6 +438,44 @@ internal static class SourceFileParser
                 {
                     errors.Add(result.Error);
                 }
+            }
+            catch (JsonException exception)
+            {
+                errors.Add(new ParseError(lineNumber, exception.Message));
+            }
+        }
+
+        return new ParseResult(events, errors, errors.Count == 0 ? AdapterCapabilityStatus.Available : AdapterCapabilityStatus.ParseFallback);
+    }
+
+    private static ParseResult ParseJsonLines(Stream stream, SourceAdapterKind adapterKind, CancellationToken cancellationToken)
+    {
+        if (stream.CanSeek && stream.Length <= 8 * 1024 * 1024)
+        {
+            using var bufferedReader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1024, leaveOpen: true);
+            var buffered = bufferedReader.ReadToEnd();
+            var providerResult = ProviderLogParser.ParseJsonLines(buffered, adapterKind, cancellationToken);
+            if (providerResult.Recognized) return providerResult.Result;
+            return ParseJsonLines(buffered, adapterKind, cancellationToken);
+        }
+
+        if (stream.CanSeek) stream.Position = 0;
+        using var reader = new StreamReader(stream);
+        var events = new List<NormalizedEvent>();
+        var errors = new List<ParseError>();
+        var lineNumber = 0;
+        string? line;
+        while ((line = reader.ReadLine()) is not null)
+        {
+            lineNumber++;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                var result = NormalizeElement(document.RootElement, adapterKind, lineNumber);
+                if (result.Event is not null) events.Add(result.Event);
+                if (result.Error is not null) errors.Add(result.Error);
             }
             catch (JsonException exception)
             {

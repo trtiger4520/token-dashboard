@@ -4,11 +4,11 @@ THESIS: Treat the dashboard as a working blueprint margin, not a card gallery; t
 OWN-WORLD: Neutral paper surfaces, 1px hairlines, Inter data labels, JetBrains Mono measurements, and schematic blue only for action
 STORY: A developer starts with a date and source, compares token efficiency, then opens a session down to its event evidence
 FIRST VIEWPORT: The left rail fixes scope, the center places KPIs and comparison evidence, and the right rail holds the selected record
-FORM: Operate-mode three-column control rail / comparison matrix / inspector, inherited from the route dashboard surface brief
+FORM: Operate-mode control rail / comparison matrix / session timeline drawer
 */
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { extractStartupKey, TokenDashboardClient, type SourceDiscoveryResult, type SyncRequest } from './api'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { routerKey, routeLocationKey } from 'vue-router'
+import { extractStartupKey, TokenDashboardClient, type ManagedSource, type SourceDiscoveryResult, type SyncRequest } from './api'
 import { isValidDateRange, resolveDateRange, resolveDayRange, type DatePreset } from './dateRange'
 import { cacheTokenCount, createEmptyDashboardData, formatDateLabel, formatNumber, formatTokenCount, formatUsd, inputTokenCount, outputTokenCount, totalTokens, type Budget, type BudgetSummary, type DashboardData, type DashboardQuery, type EventKind, type PricingEntry, type SavedView, type SearchResult, type SessionRecord, type TagRecord, type TokenType, type TrendPoint, type UnknownPricing } from './types'
 import { layoutTreemap, type TreemapRect } from './treemap'
@@ -24,7 +24,16 @@ const selectedSessionId = ref('')
 const selectedEventId = ref('')
 const revealedEventFields = reactive<Record<string, string>>({})
 const revealingEventFields = reactive<Record<string, boolean>>({})
-const inspectorTab = ref<'detail' | 'stats' | 'capabilities'>('detail')
+const sessionDrawerOpen = ref(false)
+const sessionTimeline = ref<Array<Record<string, unknown>>>([])
+const timelineCursor = ref<string | null>(null)
+const timelineHasMore = ref(false)
+const timelineLoading = ref(false)
+const timelineReveal = ref(false)
+const managedSources = ref<ManagedSource[]>([])
+const previewResult = ref<Record<string, unknown> | null>(null)
+const settingsLoading = ref(false)
+const dataJobActive = ref(false)
 const searchTerm = ref('')
 const searchResults = ref<Array<SearchResult & { title: string }>>([])
 const searchError = ref('')
@@ -52,6 +61,7 @@ const selectedPricingKeys = ref<string[]>([])
 const mergePricingConfirmation = ref(false)
 const mergingPricing = ref(false)
 const showDeleteConfirm = ref(false)
+const removeManagedSourcesOnDelete = ref(false)
 const pendingExport = ref<'json' | 'sqlite' | null>(null)
 const deleteDialog = ref<HTMLDialogElement | null>(null)
 const exportDialog = ref<HTMLDialogElement | null>(null)
@@ -59,18 +69,16 @@ const lastDialogTrigger = ref<HTMLElement | null>(null)
 const isDark = ref(false)
 const routePath = ref(window.location.pathname)
 let routerPush: ((to: string) => Promise<unknown>) | undefined
-try {
-  const route = useRoute()
-  const router = useRouter()
+const route = inject(routeLocationKey, null)
+const router = inject(routerKey, null)
+if (route && router) {
   routePath.value = route.path
   routerPush = async (to: string) => {
     routePath.value = to
     return router.push(to)
   }
-} catch {
-  // App is also mounted directly by unit tests without a router plugin
 }
-const currentRoute = computed(() => routePath.value === '/pricing' ? '/pricing' : '/dashboard')
+const currentRoute = computed(() => routePath.value === '/pricing' ? '/pricing' : routePath.value === '/settings' ? '/settings' : '/dashboard')
 const selectedDate = ref('')
 const datePreset = ref<DatePreset>('30')
 const dateRange = reactive(resolveDateRange('30'))
@@ -101,7 +109,8 @@ function readDashboardPreference<T extends string>(key: string, fallback: T, all
 const trendMetric = ref<TrendMetric>(readDashboardPreference('trend-metric', 'cost', ['cost', 'tokens']))
 const trendGranularity = ref<TrendGranularity>(readDashboardPreference('trend-granularity', 'daily', ['daily', 'weekly', 'monthly']))
 
-const selectedSession = computed<SessionRecord | undefined>(() => data.value.sessions.find((session) => session.id === selectedSessionId.value))
+const emptySession: SessionRecord = { id: '', title: '', workspaceId: null, source: '', tool: '', model: '', effort: null, additionalModelCount: 0, additionalEffortCount: 0, startedAt: '', endedAt: '', tokens: {}, costUsd: null, tags: [], turns: [] }
+const selectedSession = computed<SessionRecord>(() => data.value.sessions.find((session) => session.id === selectedSessionId.value) ?? emptySession)
 const selectedEvent = computed(() => selectedSession.value?.turns.flatMap((turn) => turn.events).find((event) => event.id === selectedEventId.value))
 const allTags = computed(() => [...new Set(data.value.tags.map((tag) => tag.key).concat(data.value.sessions.flatMap((session) => session.tags)))].sort())
 const projectOptions = computed(() => [...new Set(data.value.sessions.map((session) => session.workspaceId).filter((value): value is string => Boolean(value)))].sort())
@@ -210,7 +219,7 @@ async function mergeSelectedPricingSuggestions(): Promise<void> {
   }
 }
 
-function navigate(route: '/dashboard' | '/pricing'): void {
+function navigate(route: '/dashboard' | '/pricing' | '/settings'): void {
   if (routerPush) void routerPush(route)
   else {
     window.history.pushState({}, '', route)
@@ -284,7 +293,42 @@ async function refresh(): Promise<void> {
 function selectSession(session: SessionRecord): void {
   selectedSessionId.value = session.id
   selectedEventId.value = ''
-  inspectorTab.value = 'detail'
+  sessionDrawerOpen.value = true
+  sessionTimeline.value = []
+  timelineCursor.value = null
+  timelineHasMore.value = true
+  timelineReveal.value = false
+  void loadTimeline()
+}
+
+async function loadTimeline(): Promise<void> {
+  if (!sessionDrawerOpen.value || !selectedSessionId.value || timelineLoading.value || !timelineHasMore.value) return
+  timelineLoading.value = true
+  try {
+    const payload = await client.getSessionTimeline(selectedSessionId.value, timelineCursor.value, timelineReveal.value)
+    const items = Array.isArray(payload.items) ? payload.items.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null) : []
+    sessionTimeline.value = [...sessionTimeline.value, ...items]
+    timelineCursor.value = typeof payload.nextCursor === 'string' ? payload.nextCursor : null
+    timelineHasMore.value = Boolean(payload.hasMore)
+  } catch (error) {
+    operationMessage.value = error instanceof Error ? error.message : 'Session timeline 讀取失敗'
+  } finally {
+    timelineLoading.value = false
+  }
+}
+
+function closeSessionDrawer(): void {
+  sessionDrawerOpen.value = false
+  timelineLoading.value = false
+}
+
+async function revealTimeline(): Promise<void> {
+  if (!sessionDrawerOpen.value || !selectedSessionId.value) return
+  timelineReveal.value = true
+  sessionTimeline.value = []
+  timelineCursor.value = null
+  timelineHasMore.value = true
+  await loadTimeline()
 }
 
 async function revealEventField(field: 'prompt' | 'response' | 'payload'): Promise<void> {
@@ -534,13 +578,22 @@ async function onImport(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
+  if (dataJobActive.value) {
+    operationMessage.value = '已有資料工作進行中，請等待完成'
+    return
+  }
+  dataJobActive.value = true
   try {
-    await client.importFile(file, sourceAdapter.value)
-    operationMessage.value = `${file.name} 已送出匯入`
+    const queued = await client.importFile(file, sourceAdapter.value)
+    const completed = await client.waitForSync(queued.syncId)
+    operationMessage.value = completed.error ?? `${file.name} 已完成匯入`
     await refresh()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '匯入失敗，請確認檔案格式與來源欄位'
     syncState.value = 'error'
+  } finally {
+    dataJobActive.value = false
+    input.value = ''
   }
 }
 
@@ -615,10 +668,12 @@ function cancelDialog(kind: 'delete' | 'export', event: Event): void {
 
 async function confirmDelete(): Promise<void> {
   try {
-    await client.deleteAll()
+    await client.deleteAll(removeManagedSourcesOnDelete.value)
     data.value = createEmptyDashboardData()
     selectedSessionId.value = ''
     syncState.value = 'empty'
+    if (removeManagedSourcesOnDelete.value) managedSources.value = []
+    removeManagedSourcesOnDelete.value = false
     closeDialog('delete')
   } catch {
     errorMessage.value = '資料刪除失敗，沒有變更本機資料'
@@ -628,16 +683,37 @@ async function confirmDelete(): Promise<void> {
 
 async function discoverSources(): Promise<void> {
   try {
-    discoveredSources.value = await client.discoverSources(sourceAdapter.value, sourcePath.value || undefined)
-    operationMessage.value = `來源掃描完成，共檢查 ${discoveredSources.value.length} 個 adapter`
+    if (sourcePath.value) {
+      const preview = await client.previewSource(sourceAdapter.value, sourcePath.value)
+      previewResult.value = preview
+      operationMessage.value = `預覽完成，抽樣 ${Number(preview.sampledFileCount ?? 0)} 個檔案，請確認後再同步`
+    } else {
+      discoveredSources.value = await client.discoverSources(sourceAdapter.value)
+      operationMessage.value = `來源掃描完成，共檢查 ${discoveredSources.value.length} 個 adapter`
+    }
   } catch (error) {
     operationMessage.value = error instanceof Error ? error.message : '來源掃描失敗'
   }
 }
 
 async function syncSources(): Promise<void> {
+  if (dataJobActive.value) {
+    operationMessage.value = '已有資料工作進行中，請等待完成'
+    return
+  }
+  if (sourcePath.value && sourceAdapter.value === 'auto' && !previewResult.value) {
+    operationMessage.value = '請先預覽來源並確認建議 Adapter'
+    return
+  }
+  dataJobActive.value = true
   try {
-    const request: SyncRequest = { adapter: sourceAdapter.value === 'auto' ? undefined : sourceAdapter.value, paths: sourcePath.value ? [sourcePath.value] : undefined }
+    const suggested = typeof previewResult.value?.suggestedAdapter === 'string' ? previewResult.value.suggestedAdapter : undefined
+    const adapter = sourceAdapter.value === 'auto' ? suggested?.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase() : sourceAdapter.value
+    if (sourcePath.value && !adapter) {
+      operationMessage.value = '無法判斷來源 Adapter，請手動選取'
+      return
+    }
+    const request: SyncRequest = { adapter, paths: sourcePath.value ? [sourcePath.value] : undefined }
     const started = await client.startSync(request)
     operationMessage.value = `同步 ${started.status}`
     const status = await client.waitForSync(started.syncId)
@@ -649,6 +725,53 @@ async function syncSources(): Promise<void> {
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '同步失敗'
     syncState.value = 'error'
+  } finally {
+    dataJobActive.value = false
+  }
+}
+
+async function loadManagedSources(): Promise<void> {
+  settingsLoading.value = true
+  try {
+    managedSources.value = await client.getManagedSources()
+  } catch (error) {
+    operationMessage.value = error instanceof Error ? error.message : '來源設定讀取失敗'
+  } finally {
+    settingsLoading.value = false
+  }
+}
+
+async function recoverActiveJob(): Promise<void> {
+  try {
+    const active = await client.getActiveJob()
+    if (!active) return
+    dataJobActive.value = true
+    operationMessage.value = `背景資料工作進行中 · ${active.phase ?? active.status}`
+    const completed = await client.waitForSync(active.syncId)
+    operationMessage.value = completed.error ?? `背景資料工作${completed.status === 'partial' ? '部分完成' : '完成'}`
+    await refresh()
+  } catch (error) {
+    operationMessage.value = error instanceof Error ? error.message : '背景資料工作狀態讀取失敗'
+  } finally {
+    dataJobActive.value = false
+  }
+}
+
+async function toggleManagedSource(source: ManagedSource): Promise<void> {
+  try {
+    await client.setManagedSourceEnabled(source.id, !source.enabled)
+    await loadManagedSources()
+  } catch (error) {
+    operationMessage.value = error instanceof Error ? error.message : '來源狀態更新失敗'
+  }
+}
+
+async function removeManagedSource(source: ManagedSource): Promise<void> {
+  try {
+    await client.deleteManagedSource(source.id)
+    await loadManagedSources()
+  } catch (error) {
+    operationMessage.value = error instanceof Error ? error.message : '來源移除失敗'
   }
 }
 
@@ -738,6 +861,19 @@ function eventCount(session: SessionRecord): number {
   return session.turns.reduce((sum, turn) => sum + turn.events.length, 0)
 }
 
+function recordValue(value: unknown, key: string): unknown {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>)[key] : undefined
+}
+
+function timelineEvents(turn: Record<string, unknown>): Array<Record<string, unknown>> {
+  return Array.isArray(turn.events) ? turn.events.filter((event): event is Record<string, unknown> => typeof event === 'object' && event !== null) : []
+}
+
+function onTimelineScroll(event: Event): void {
+  const target = event.currentTarget
+  if (target instanceof HTMLElement && target.scrollTop + target.clientHeight >= target.scrollHeight - 120) void loadTimeline()
+}
+
 onMounted(() => {
   if (typeof ResizeObserver !== 'undefined') {
     treemapResizeObserver = new ResizeObserver(updateTreemapSize)
@@ -750,6 +886,12 @@ onMounted(() => {
   }
   loadSavedViews()
   void refresh().then(() => loadBudgets())
+  void loadManagedSources()
+  void recoverActiveJob()
+})
+
+watch(currentRoute, (route) => {
+  if (route === '/settings') void loadManagedSources()
 })
 
 watch(treemapContainer, async (container, previousContainer) => {
@@ -784,7 +926,7 @@ onBeforeUnmount(() => {
         <span class="topbar-divider" aria-hidden="true"></span>
         <span class="mono">{{ data.overview.timeZoneId || '本機時區' }} / {{ dateRange.startDate }} — {{ dateRange.endDate }}</span>
       </div>
-      <nav class="topbar-nav" aria-label="主要導覽"><button type="button" :class="{ active: currentRoute === '/dashboard' }" @click="navigate('/dashboard')">儀錶板</button><button type="button" :class="{ active: currentRoute === '/pricing' }" @click="navigate('/pricing')">定價</button></nav>
+      <nav class="topbar-nav" aria-label="主要導覽"><button type="button" :class="{ active: currentRoute === '/dashboard' }" @click="navigate('/dashboard')">儀錶板</button><button type="button" :class="{ active: currentRoute === '/pricing' }" @click="navigate('/pricing')">定價</button><button type="button" :class="{ active: currentRoute === '/settings' }" @click="navigate('/settings')">資料設定</button></nav>
       <div class="topbar-actions">
         <span class="sync-indicator" :class="`sync-${syncState}`" role="status">{{ syncState === 'loading' ? '更新資料中' : syncState === 'partial' ? '部分來源未更新' : syncState === 'error' ? '讀取失敗' : syncState === 'empty' ? '沒有資料' : '資料已更新' }}</span>
         <button class="button button-secondary" type="button" @click="void refresh()">重新載入資料</button>
@@ -793,7 +935,7 @@ onBeforeUnmount(() => {
     </header>
 
     <section v-if="currentRoute === '/pricing'" class="pricing-route" aria-labelledby="pricing-route-heading">
-      <div class="route-heading pricing-heading"><div><span class="eyebrow">PRICE GOVERNANCE / API CATALOG</span><h1 id="pricing-route-heading">價格治理</h1><p>用同一套歷史有效區間管理 OpenAI 與 Anthropic 的 API 成本規則，未知價格永遠保持未知</p></div><button class="button button-secondary" type="button" @click="navigate('/dashboard')">返回 Dashboard</button></div>
+      <div class="route-heading pricing-heading"><div><span class="eyebrow">PRICE GOVERNANCE / API CATALOG</span><h1 id="pricing-route-heading">價格治理</h1><p>用同一套歷史有效區間管理 OpenAI 與 Anthropic 的 API 成本規則，未知價格永遠保持未知</p><p v-if="operationMessage" class="rail-note" role="status">{{ operationMessage }}</p></div><button class="button button-secondary" type="button" @click="navigate('/dashboard')">返回 Dashboard</button></div>
 
       <div class="pricing-summary" aria-label="價格 catalog 摘要">
         <article><span class="eyebrow">MODELS</span><strong>{{ pricingModelCount }}</strong><span>官方模型</span></article>
@@ -819,6 +961,14 @@ onBeforeUnmount(() => {
       <section class="pricing-editor"><div class="section-heading-row"><div><span class="eyebrow">LOCAL OVERRIDE</span><h2>建立或修訂本機覆寫</h2></div><span class="rail-note">半開有效區間 · 不改寫官方 catalog</span></div><div class="form-grid"><label>Provider<input v-model="pricingProvider" /></label><label>Model<input v-model="pricingModel" /></label><label>Token type<input v-model="pricingTokenType" /></label><label>Mode<input v-model="pricingMode" /></label><label>USD / MTok<input v-model="pricingAmount" inputmode="decimal" /></label><label>Effective from<input v-model="pricingEffectiveFrom" type="date" /></label><label>Effective to<input v-model="pricingEffectiveTo" type="date" /></label><label>Min input tokens<input v-model="pricingMinimum" inputmode="numeric" /></label><label>Max input tokens<input v-model="pricingMaximum" inputmode="numeric" placeholder="不限" /></label></div><button class="button button-primary" type="button" @click="void savePricing()">儲存 override</button></section>
 
       <section class="pricing-overrides"><div class="section-heading-row"><div><span class="eyebrow">OVERRIDE HISTORY</span><h2>本機覆寫歷史</h2></div><span class="catalog-stamp">{{ overridePricingEntries.length }} 筆</span></div><div v-if="overridePricingEntries.length" class="table-scroll"><table><thead><tr><th>Provider</th><th>Model</th><th>Mode</th><th>Token type</th><th>USD / MTok</th><th>有效區間</th><th>操作</th></tr></thead><tbody><tr v-for="entry in overridePricingEntries" :key="`override-${entry.provider}-${entry.model}-${entry.mode}-${entry.tokenType}-${entry.effectiveFromUtc}`"><td>{{ entry.provider }}</td><td class="mono">{{ entry.model }}</td><td>{{ pricingModeLabel(entry.mode) }}</td><td>{{ pricingTokenLabel(entry.tokenType) }}</td><td class="mono">{{ entry.usdPerMillionTokens.toFixed(4) }}</td><td class="mono">{{ entry.effectiveFromUtc }}{{ entry.effectiveToUtc ? ` → ${entry.effectiveToUtc}` : ' → open' }}</td><td><button class="button button-ghost" type="button" @click="revisePricing(entry)">修訂</button><button v-if="!entry.effectiveToUtc" class="button button-ghost" type="button" @click="void deactivatePricing(entry.provider, entry.model, entry.tokenType, entry.mode)">停用</button></td></tr></tbody></table></div><p v-else class="table-empty override-empty">尚未建立本機覆寫</p></section>
+    </section>
+
+    <section v-if="currentRoute === '/settings'" class="settings-route" aria-labelledby="settings-heading">
+      <div class="route-heading"><div><span class="eyebrow">DATA GOVERNANCE / LOCAL SOURCES</span><h1 id="settings-heading">資料設定</h1><p>管理來源、同步狀態、能力與標籤，資料工作一次只執行一個</p></div><button class="button button-secondary" type="button" @click="navigate('/dashboard')">返回 Dashboard</button></div>
+      <section class="panel settings-section" aria-labelledby="managed-sources-heading"><div class="panel-header"><div><span class="eyebrow">MANAGED SOURCES</span><h2 id="managed-sources-heading">已記住的來源</h2><p>成功確認的本機路徑預設加入啟動同步清單，上傳檔案不會被記住</p></div><button class="button button-secondary" type="button" :disabled="settingsLoading" @click="void loadManagedSources()">重新整理</button></div><div v-if="managedSources.length" class="managed-source-list"><div v-for="source in managedSources" :key="source.id" class="managed-source-row"><div><strong>{{ source.path }}</strong><span class="mono">{{ source.adapter }} · {{ source.lastSuccessAtUtc ? `最後成功 ${source.lastSuccessAtUtc}` : '尚未成功同步' }}</span><span v-if="source.lastError" class="unknown">{{ source.lastError }}</span></div><div class="button-row"><button class="button button-ghost" type="button" @click="void toggleManagedSource(source)">{{ source.enabled ? '停用' : '啟用' }}</button><button class="button button-ghost" type="button" @click="void removeManagedSource(source)">移除</button></div></div></div><p v-else class="panel-empty">目前沒有已記住的來源</p></section>
+      <section class="panel settings-section" aria-labelledby="source-preview-heading"><div class="panel-header"><div><span class="eyebrow">SOURCE PREVIEW</span><h2 id="source-preview-heading">新增或檢查本機路徑</h2><p>先抽樣檔案並確認 Adapter，再開始完整同步</p></div></div><div class="form-grid"><label>Adapter<select v-model="sourceAdapter"><option value="auto">抽樣後建議</option><option value="claude-code-app">Claude Code App</option><option value="claude-code-cli">Claude Code CLI</option><option value="codex-app">Codex App</option><option value="codex-cli">Codex CLI</option></select></label><label class="field-wide">本機路徑<input v-model="sourcePath" placeholder="C:\\workspace\\logs" /></label></div><div class="button-row"><button class="button button-secondary" type="button" :disabled="dataJobActive" @click="void discoverSources()">預覽來源</button><button class="button button-primary" type="button" :disabled="dataJobActive || !sourcePath" @click="void syncSources()">開始同步</button></div><div v-if="previewResult" class="preview-summary" aria-live="polite"><strong>建議 Adapter：{{ String(previewResult.suggestedAdapter ?? '無法判斷') }}</strong><span>抽樣 {{ Number(previewResult.sampledFileCount ?? 0) }} 個檔案 · {{ formatNumber(Number(previewResult.sampledBytes ?? 0)) }} bytes</span><span v-if="previewResult.requiresConfirmation">請確認 Adapter 後再開始同步</span></div></section>
+      <section class="panel settings-section" aria-labelledby="capability-heading"><div class="panel-header"><div><span class="eyebrow">CAPABILITY MAP</span><h2 id="capability-heading">目前可用能力</h2></div></div><ul class="capability-list"><li v-for="capability in data.capabilities" :key="capability">{{ capability }}</li></ul></section>
+      <section class="panel settings-section" aria-labelledby="tag-heading"><div class="panel-header"><div><span class="eyebrow">TAG MANAGEMENT</span><h2 id="tag-heading">標籤</h2></div></div><div class="form-grid"><label>Scope<select v-model="tagScope"><option value="session">Session</option><option value="project">Project</option><option value="source">Source</option></select></label><label>Entity target<input v-model="tagEntityId" placeholder="session-id 或 source-id" /></label><label>Tag key<input v-model="tagInput" placeholder="例如 review" /></label><label>Value<input v-model="tagValue" placeholder="可選值" /></label></div><button class="button button-secondary" type="button" @click="addTag">新增 tag</button><div class="tag-list settings-tags"><span v-for="tag in data.tags" :key="`${tag.scope}-${tag.entityId}-${tag.id || tag.key}`" class="tag tag-neutral">{{ tag.key }}<button type="button" :aria-label="`刪除 ${tag.key}`" @click="removeAssignment(tag)">×</button></span></div></section>
     </section>
 
     <div v-if="currentRoute === '/dashboard'" class="dashboard-layout">
@@ -876,9 +1026,9 @@ onBeforeUnmount(() => {
           <p class="rail-note">自動發現、匯入或指定本機路徑。真實供應商格式仍需脫敏樣本驗證。</p>
           <label>Adapter<select v-model="sourceAdapter"><option value="auto">依檔名判斷</option><option value="claude-code-app">Claude Code App</option><option value="claude-code-cli">Claude Code CLI</option><option value="codex-app">Codex App</option><option value="codex-cli">Codex CLI</option></select></label>
           <label>自訂來源路徑<input v-model="sourcePath" placeholder="C:\\workspace\\logs" /></label>
-          <div class="button-row"><button class="button button-secondary" type="button" @click="void discoverSources()">掃描來源</button><button class="button button-primary" type="button" @click="void syncSources()">開始同步</button></div>
+          <div class="button-row"><button class="button button-secondary" type="button" :disabled="dataJobActive" @click="void discoverSources()">掃描來源</button><button class="button button-primary" type="button" :disabled="dataJobActive" @click="void syncSources()">開始同步</button></div>
           <p v-if="discoveredSources.length" class="rail-note"><span v-for="source in discoveredSources" :key="source.adapter" class="discovery-result"><strong>{{ source.adapter }}</strong> · {{ source.paths.length ? source.paths.join(' · ') : '未發現路徑' }}</span></p>
-          <label class="file-button">匯入 JSON / CSV<input type="file" accept=".json,.csv,application/json,text/csv" @change="void onImport($event)" /></label>
+          <label class="file-button" :class="{ disabled: dataJobActive }">匯入 JSON / CSV<input type="file" :disabled="dataJobActive" accept=".json,.csv,application/json,text/csv" @change="void onImport($event)" /></label>
         </section>
 
         <section class="rail-section" aria-labelledby="data-heading">
@@ -921,17 +1071,18 @@ onBeforeUnmount(() => {
         </template>
       </main>
 
-      <aside class="inspector" aria-label="選取資料檢視器">
-        <div class="inspector-heading"><span class="eyebrow">詳細資料</span><h2>{{ selectedSession ? '已選取的工作階段' : '資料檢視器' }}</h2><p>{{ selectedSession ? `工作階段 ID：${selectedSession.id}` : '從工作階段費用清單選取一筆資料，查看 Token 與成本明細' }}</p></div>
-        <nav class="inspector-tabs" aria-label="檢視器分頁"><button v-for="tab in ([['detail', '明細'], ['stats', '定價'], ['capabilities', '功能']] as const)" :key="tab[0]" type="button" :class="{ active: inspectorTab === tab[0] }" @click="inspectorTab = tab[0]">{{ tab[1] }}</button></nav>
-         <div v-if="inspectorTab === 'detail'" class="inspector-content"><template v-if="selectedSession"><section class="inspector-section"><span class="eyebrow">Token 明細</span><h3>{{ selectedSession.model || '模型未提供' }}</h3><p v-if="selectedSession.effort" class="mono">推理強度 {{ selectedSession.effort }}</p><dl class="detail-list"><div><dt>輸入</dt><dd class="mono">{{ formatTokenCount(inputTokenCount(selectedSession.tokens)) }}</dd></div><div><dt>輸出</dt><dd class="mono">{{ formatTokenCount(outputTokenCount(selectedSession.tokens)) }}</dd></div><div><dt>快取</dt><dd class="mono">{{ formatTokenCount(cacheTokenCount(selectedSession.tokens)) }}</dd></div><div><dt>合計</dt><dd class="mono">{{ formatTokenCount(totalTokens(selectedSession.tokens)) }}</dd></div><div><dt>已知成本</dt><dd class="mono" :class="{ unknown: selectedSession.costUsd === null }">{{ sessionCostLabel(selectedSession) }}</dd></div><div v-if="selectedSession.costUsd === null"><dt>成本覆蓋率</dt><dd class="mono">{{ costCoverageLabel(selectedSession.costCoverage) }}</dd></div></dl></section><section class="inspector-section"><span class="eyebrow">來源與時間</span><p>{{ selectedSession.source }} · {{ selectedSession.tool }}</p><p class="mono">開始 {{ selectedSession.startedAt }}</p><p class="mono">結束 {{ selectedSession.endedAt }}</p></section></template><div v-else class="inspector-empty">從工作階段費用清單選取資料後，這裡會顯示 Token 明細、已知成本與來源時間</div></div>
-        <div v-else-if="inspectorTab === 'stats'" class="inspector-content"><section class="inspector-section"><span class="eyebrow">PRICING VERSION</span><h3>{{ data.pricing.version }}</h3><dl class="detail-list"><div><dt>Effective from</dt><dd class="mono">{{ data.pricing.effectiveFrom }}</dd></div><div><dt>Unknown price</dt><dd class="unknown mono">{{ data.pricing.unknownCount }}</dd></div><div><dt>Overrides</dt><dd class="mono">{{ data.pricing.overrideCount }}</dd></div></dl></section><section class="inspector-section"><span class="eyebrow">PRICE OVERRIDE</span><label>Provider<input v-model="pricingProvider" placeholder="openai" /></label><label>Model<input v-model="pricingModel" placeholder="gpt-5-codex" /></label><label>Token type<select v-model="pricingTokenType"><option v-for="tokenType in data.tokenTypes" :key="tokenType" :value="tokenType">{{ tokenType }}</option></select></label><label>Mode<input v-model="pricingMode" placeholder="standard" /></label><label>USD / MTok<input v-model="pricingAmount" inputmode="decimal" placeholder="3.00" /></label><label>Effective from<input v-model="pricingEffectiveFrom" type="date" /></label><label>Effective to<input v-model="pricingEffectiveTo" type="date" /></label><label>Min input tokens<input v-model="pricingMinimum" inputmode="numeric" /></label><label>Max input tokens<input v-model="pricingMaximum" inputmode="numeric" placeholder="不限" /></label><button class="button button-primary button-full" type="button" @click="void savePricing()">儲存 override</button><p class="rail-note">有效區間採半開區間；未知價格不會被推估</p></section></div>
-        <div v-else class="inspector-content"><section class="inspector-section"><span class="eyebrow">CAPABILITY MAP</span><h3>目前可用能力</h3><ul class="capability-list"><li v-for="capability in data.capabilities" :key="capability">{{ capability }}</li></ul></section><section class="inspector-section"><span class="eyebrow">TAG MANAGEMENT</span><label>Scope<select v-model="tagScope"><option value="session">Session</option><option value="project">Project</option><option value="source">Source</option></select></label><label>Entity target<input v-model="tagEntityId" :placeholder="tagScope === 'session' ? selectedSession?.id ?? 'session-id' : 'source-or-project-id'" /></label><label>Tag key<input id="tag-management-input" v-model="tagInput" placeholder="例如 review" @keyup.enter="addTag" /></label><label>Value<input v-model="tagValue" placeholder="可選值" /></label><button class="button button-secondary" type="button" @click="addTag">新增 tag</button><div class="tag-assignment-list"><div v-for="assignment in data.tags" :key="`${assignment.scope}-${assignment.entityId}-${assignment.id || assignment.key}`" class="tag-assignment"><span class="tag tag-neutral">{{ assignment.key }}<span v-if="assignment.value">={{ assignment.value }}</span></span><span class="mono">{{ assignment.scope }} / {{ assignment.entityId }}</span><button type="button" :aria-label="`刪除 ${assignment.key} tag`" @click="removeAssignment(assignment)">刪除</button></div><span v-if="!data.tags.length" class="rail-note">目前沒有 tag assignment</span></div></section><section class="inspector-section"><span class="eyebrow">TAGS</span><div class="tag-list"><button v-for="tag in allTags" :key="tag" class="tag tag-neutral" type="button" @click="tagFilter = tag; void refresh()">{{ tag }}</button></div></section></div>
-        <div class="inspector-footer"><span class="eyebrow">SESSION STORAGE</span><p>Startup fragment key 讀取後立即移除，API 只使用 <code>X-Token-Dashboard-Key</code></p></div>
+      <aside v-if="sessionDrawerOpen" class="session-drawer" role="dialog" aria-modal="true" aria-labelledby="session-drawer-heading">
+        <div class="session-drawer-header"><div><span class="eyebrow">SESSION TIMELINE</span><h2 id="session-drawer-heading">{{ selectedSession?.workspaceId || selectedSession?.title || '工作階段' }}</h2><p class="mono">{{ selectedSession?.id }}</p></div><button class="button button-icon" type="button" aria-label="關閉 Session 詳情" @click="closeSessionDrawer">關閉</button></div>
+        <div class="session-drawer-summary" v-if="selectedSession"><span>{{ selectedSession.source }}</span><span>{{ formatSessionStartedAt(selectedSession.startedAt) }}</span><span>{{ sessionCostLabel(selectedSession) }}</span></div>
+        <div class="session-drawer-actions"><button class="button button-secondary" type="button" :disabled="timelineReveal" @click="void revealTimeline()">{{ timelineReveal ? '內容已揭露' : '揭露目前載入內容' }}</button><span class="rail-note">由最早到最新 · {{ sessionTimeline.length }} 個 Turn</span></div>
+        <div class="session-drawer-content" @scroll="onTimelineScroll">
+          <article v-for="turn in sessionTimeline" :key="String(turn.id)" class="timeline-turn"><div class="timeline-turn-heading"><span class="eyebrow">TURN {{ String(turn.sequence ?? '') }}</span><span class="mono">{{ String(turn.occurredAtUtc ?? '') }}</span></div><div v-for="event in timelineEvents(turn)" :key="String(recordValue(event, 'event_fingerprint') ?? '')" class="timeline-event"><div><strong>{{ String(recordValue(event, 'event_type') ?? 'event') }}</strong><span v-if="recordValue(event, 'model')"> · {{ String(recordValue(event, 'model')) }}</span><span v-if="recordValue(event, 'tool')"> · {{ String(recordValue(event, 'tool')) }}</span></div><p>{{ String(recordValue(event, 'prompt') || recordValue(event, 'response') || recordValue(event, 'payload') || '無文字內容') }}</p></div><div v-if="!timelineEvents(turn).length" class="panel-empty">此 Turn 沒有可顯示的事件</div></article>
+          <div v-if="timelineLoading" class="panel-empty" aria-live="polite">載入 Timeline 中</div><div v-else-if="!sessionTimeline.length" class="panel-empty">目前沒有 Timeline 事件</div><button v-else-if="timelineHasMore" class="button button-secondary timeline-load-more" type="button" @click="void loadTimeline()">繼續載入</button>
+        </div>
       </aside>
     </div>
 
     <dialog v-if="pendingExport" ref="exportDialog" class="confirm-dialog" aria-labelledby="export-heading" @cancel="cancelDialog('export', $event)" @close="finalizeDialog('export')"><div class="dialog-panel"><span class="eyebrow">CONTENT EXPORT</span><h2 id="export-heading">匯出完整內容？</h2><p>此 {{ pendingExport.toUpperCase() }} 檔案會包含 prompt、response 與 tool payload，可能含敏感內容。</p><div class="dialog-actions"><button class="button button-secondary" type="button" data-autofocus @click="closeDialog('export')">取消</button><button class="button button-primary" type="button" @click="void performExport(pendingExport)">確認匯出</button></div></div></dialog>
-    <dialog v-if="showDeleteConfirm" ref="deleteDialog" class="confirm-dialog" aria-labelledby="delete-heading" @cancel="cancelDialog('delete', $event)" @close="finalizeDialog('delete')"><div class="dialog-panel"><span class="eyebrow">DESTRUCTIVE ACTION</span><h2 id="delete-heading">刪除所有本機資料？</h2><p>這會刪除 Session、Turn、事件、tag 與搜尋索引。匯出備份無法在此操作後自動恢復。</p><div class="dialog-actions"><button class="button button-secondary" type="button" data-autofocus @click="closeDialog('delete')">取消</button><button class="button button-danger" type="button" @click="void confirmDelete()">確認刪除</button></div></div></dialog>
+    <dialog v-if="showDeleteConfirm" ref="deleteDialog" class="confirm-dialog" aria-labelledby="delete-heading" @cancel="cancelDialog('delete', $event)" @close="finalizeDialog('delete')"><div class="dialog-panel"><span class="eyebrow">DESTRUCTIVE ACTION</span><h2 id="delete-heading">刪除所有本機資料？</h2><p>這會刪除 Session、Turn、事件、tag 與搜尋索引。匯出備份無法在此操作後自動恢復。</p><label class="checkbox-row"><input v-model="removeManagedSourcesOnDelete" type="checkbox" /> 同時移除已記住的來源設定</label><div class="dialog-actions"><button class="button button-secondary" type="button" data-autofocus @click="closeDialog('delete')">取消</button><button class="button button-danger" type="button" @click="void confirmDelete()">確認刪除</button></div></div></dialog>
   </div>
 </template>

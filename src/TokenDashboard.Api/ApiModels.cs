@@ -10,6 +10,16 @@ public sealed record SourceImportRequest(
     string? WorkspaceId = null,
     string? OwnerId = null);
 
+public sealed record ManagedSourceRequest(
+    string Adapter,
+    string Path,
+    bool Enabled = true,
+    bool RememberOnStartup = true);
+
+public sealed record SourcePreviewRequest(
+    string Adapter,
+    string Path);
+
 public sealed record TagRequest(
     string Scope,
     string EntityId,
@@ -83,7 +93,8 @@ public sealed record ExportRequest(
 public sealed record DeleteDataRequest(
     bool ClearAll = false,
     IReadOnlyList<string>? SessionIds = null,
-    IReadOnlyList<string>? SourceIds = null);
+    IReadOnlyList<string>? SourceIds = null,
+    bool RemoveManagedSources = false);
 
 public sealed record DashboardFilter(
     string? SourceId = null,
@@ -170,6 +181,23 @@ public sealed record EventRow(
         TokenTypeNormalizer.IsCacheRead(key)
         || TokenTypeNormalizer.Normalize(key).Contains("cache", StringComparison.Ordinal));
 }
+
+public sealed record DashboardSnapshotDto(
+    object Overview,
+    IReadOnlyList<object> Trend,
+    IReadOnlyList<object> Monthly,
+    IReadOnlyList<object> Heatmap,
+    IReadOnlyList<object> ComparisonTree,
+    IReadOnlyList<object> Sessions,
+    string? NextCursor,
+    bool HasMore,
+    DateTimeOffset GeneratedAtUtc,
+    int SchemaVersion = 1);
+
+public sealed record SessionPageDto(
+    IReadOnlyList<object> Items,
+    string? NextCursor,
+    bool HasMore);
 
 public static class TokenTypeNormalizer
 {
