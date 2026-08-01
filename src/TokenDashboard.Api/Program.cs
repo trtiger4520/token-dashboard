@@ -8,18 +8,19 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 using TokenDashboard.Data;
 
 namespace TokenDashboard.Api;
 
 public static class ProgramEntry
 {
-    private const int MaxImportBytes = 10 * 1024 * 1024;
-    private static readonly string[] ClearTables = ["session_tags", "source_tags", "project_tags", "token_usages", "contents", "sub_events", "turns", "sessions", "imports", "tags", "sources", "search_index"];
+    private static readonly string[] ClearTables = ["session_tags", "source_tags", "project_tags", "token_usages", "turn_usage_tokens", "turn_usage_facts", "session_usage_rollups", "daily_usage_rollups", "contents", "sub_events", "turns", "sessions", "imports", "source_file_manifest", "import_jobs", "tags", "sources", "search_index"];
 
     public static WebApplication BuildApplication(string[] args)
     {
         var webRootPath = ResolveWebRootPath();
+        var hasWebRoot = webRootPath is not null;
         var builder = webRootPath is null
             ? WebApplication.CreateBuilder(args)
             : WebApplication.CreateBuilder(new WebApplicationOptions
@@ -27,6 +28,8 @@ public static class ProgramEntry
                 Args = args,
                 WebRootPath = webRootPath
             });
+        builder.Logging.ClearProviders();
+        builder.Logging.AddConsole();
         var listenPort = builder.Configuration.GetValue("TokenDashboard:ListenPort", 0);
         if (listenPort is < 0 or > 65535)
         {
@@ -34,11 +37,18 @@ public static class ProgramEntry
         }
 
         builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, listenPort));
+        var maxImportBytes = builder.Configuration.GetValue<long?>("TokenDashboard:MaxImportBytes") ?? ApiOptions.DefaultMaxImportBytes;
+        if (maxImportBytes > 0)
+        {
+            builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = maxImportBytes);
+        }
         builder.Services.AddOptions<ApiOptions>().BindConfiguration("TokenDashboard");
         builder.Services.AddSingleton<SessionKeyService>();
         builder.Services.AddSingleton<IBrowserLauncher, ProcessBrowserLauncher>();
         builder.Services.AddSingleton<DashboardStore>();
         builder.Services.AddSingleton<DashboardDataService>();
+        builder.Services.AddSingleton<SourceManagementService>();
+        builder.Services.AddSingleton<SourceManifestService>();
         builder.Services.AddSingleton<DashboardReadService>();
         builder.Services.AddSingleton<BudgetService>();
         builder.Services.AddSingleton<PricingResolver>();
@@ -46,6 +56,7 @@ public static class ProgramEntry
         builder.Services.AddSingleton<SyncJobService>();
         builder.Services.AddSingleton<PricingService>();
         builder.Services.AddHostedService<BrowserStartupService>();
+        builder.Services.AddHostedService<StartupDataService>();
         builder.Services.AddHostedService<SyncWorker>();
 
         var app = builder.Build();
@@ -59,12 +70,18 @@ public static class ProgramEntry
 
         app.MapPost("/api/sync", ([FromBody] SyncRequest request, [FromServices] SyncJobService jobs) =>
         {
-            var syncId = jobs.Enqueue(request);
+            if (!jobs.TryEnqueue(request, out var syncId, out var active))
+            {
+                return Results.Conflict(new { error = "A data job is already running", activeJob = active });
+            }
+
             return Results.Accepted($"/api/sync/{syncId}", new { syncId, status = "queued" });
         });
 
         app.MapGet("/api/sync/{syncId:guid}", (Guid syncId, SyncJobService jobs) =>
             jobs.TryGet(syncId, out var status) ? Results.Ok(status) : Results.NotFound());
+        app.MapGet("/api/import-jobs/active", (SyncJobService jobs) =>
+            jobs.TryGetActive(out var status) ? Results.Ok(status) : Results.NoContent());
 
         app.MapGet("/api/overview", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Overview(Range(request), Filter(request))));
         app.MapGet("/api/usage/daily", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Daily(Range(request), Filter(request))));
@@ -78,7 +95,25 @@ public static class ProgramEntry
         app.MapGet("/api/heatmap", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Heatmap(Range(request), Filter(request))));
         app.MapGet("/api/comparisons", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Comparisons(Range(request), request.Query["groupBy"].ToString(), Filter(request))));
         app.MapGet("/api/comparisons/tree", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.ComparisonTree(Range(request), Filter(request))));
+        app.MapGet("/api/dashboard-snapshot", (HttpRequest request, DashboardReadService dashboard) =>
+        {
+            var pageSize = ParsePositive(request.Query["pageSize"].ToString(), 50);
+            return Results.Ok(dashboard.Snapshot(Range(request), Filter(request), request.Query["cursor"].ToString(), pageSize));
+        });
         app.MapGet("/api/sessions", (HttpRequest request, DashboardReadService dashboard) => Results.Ok(dashboard.Sessions(Range(request), Filter(request))));
+        app.MapGet("/api/sessions/page", (HttpRequest request, DashboardReadService dashboard) =>
+        {
+            var pageSize = ParsePositive(request.Query["pageSize"].ToString(), 50);
+            return Results.Ok(dashboard.SessionsPage(Range(request), Filter(request), request.Query["cursor"].ToString(), pageSize));
+        });
+        app.MapGet("/api/sessions/{sessionId}/timeline", (HttpRequest request, string sessionId, DashboardReadService dashboard) =>
+        {
+            var pageSize = ParsePositive(request.Query["pageSize"].ToString(), 100);
+            var reveal = string.Equals(request.Query["reveal"], "true", StringComparison.OrdinalIgnoreCase);
+            return dashboard.SessionTimeline(sessionId, request.Query["cursor"].ToString(), pageSize, reveal) is { } timeline
+                ? Results.Ok(timeline)
+                : Results.NotFound();
+        });
         app.MapGet("/api/sessions/{sessionId}", (HttpRequest request, string sessionId, DashboardReadService dashboard) =>
             dashboard.Session(sessionId, string.Equals(request.Query["reveal"], "true", StringComparison.OrdinalIgnoreCase) || string.Equals(request.Query["includeContent"], "true", StringComparison.OrdinalIgnoreCase) || string.Equals(request.Query["showContent"], "true", StringComparison.OrdinalIgnoreCase)) is { } session
                 ? Results.Ok(session)
@@ -146,6 +181,21 @@ public static class ProgramEntry
         });
 
         app.MapGet("/api/sources/capabilities", (SourceAdapterRegistry registry) => Results.Ok(registry.All.Select(item => item.GetCapabilities())));
+        app.MapGet("/api/sources/managed", (SourceManagementService sources) => Results.Ok(sources.List()));
+        app.MapPut("/api/sources/managed", ([FromBody] ManagedSourceRequest request, SourceManagementService sources) =>
+        {
+            try
+            {
+                return Results.Ok(sources.Upsert(request));
+            }
+            catch (ArgumentException exception)
+            {
+                return Results.BadRequest(new { error = exception.Message });
+            }
+        });
+        app.MapPost("/api/sources/managed/{id}/enable", (string id, SourceManagementService sources) => sources.SetEnabled(id, true) ? Results.NoContent() : Results.NotFound());
+        app.MapPost("/api/sources/managed/{id}/disable", (string id, SourceManagementService sources) => sources.SetEnabled(id, false) ? Results.NoContent() : Results.NotFound());
+        app.MapDelete("/api/sources/managed/{id}", (string id, SourceManagementService sources) => sources.Delete(id) ? Results.NoContent() : Results.NotFound());
         app.MapGet("/api/sources/discovery", (HttpRequest request, SourceAdapterRegistry registry, Microsoft.Extensions.Options.IOptions<ApiOptions> options) =>
         {
             try
@@ -165,10 +215,15 @@ public static class ProgramEntry
                 return Results.BadRequest(new { error = exception.Message });
             }
         });
-        app.MapPost("/api/sources/import", ([FromBody] SourceImportRequest request, [FromServices] SourceAdapterRegistry registry, [FromServices] DashboardDataService data) => ImportSource(request, registry, data));
+        app.MapPost("/api/sources/preview", ([FromBody] SourcePreviewRequest request, SourceAdapterRegistry registry) => PreviewSource(request, registry));
+        app.MapPost("/api/sources/import", ([FromBody] SourceImportRequest request, [FromServices] SourceAdapterRegistry registry, [FromServices] DashboardDataService data, [FromServices] SourceManagementService sources, [FromServices] SyncJobService jobs, [FromServices] IOptions<ApiOptions> options) => ImportSource(request, registry, data, sources, jobs, options.Value.MaxImportBytes));
 
         app.MapPost("/api/export", ([FromBody] ExportRequest request, [FromServices] DashboardReadService dashboard, [FromServices] DashboardDataService data, HttpResponse response) => Export(request, dashboard, data, response));
         app.MapDelete("/api/data", ([FromBody] DeleteDataRequest request, [FromServices] DashboardDataService data) => Delete(request, data));
+        if (!hasWebRoot)
+        {
+            app.MapGet("/", () => Results.Content("<!doctype html><html><body><div id=\"app\"></div></body></html>", "text/html"));
+        }
         app.MapFallbackToFile("index.html");
 
         return app;
@@ -326,7 +381,80 @@ public static class ProgramEntry
         }).ToArray();
     }
 
-    private static IResult ImportSource(SourceImportRequest request, SourceAdapterRegistry registry, DashboardDataService data)
+    private static IResult PreviewSource(SourcePreviewRequest request, SourceAdapterRegistry registry)
+    {
+        if (string.IsNullOrWhiteSpace(request.Path))
+        {
+            return Results.BadRequest(new { error = "path is required" });
+        }
+
+        var path = Path.GetFullPath(request.Path.Trim());
+        var files = EnumeratePreviewFiles(path).Take(20).ToArray();
+        if (files.Length == 0 && !File.Exists(path) && !Directory.Exists(path))
+        {
+            return Results.NotFound(new { error = "Source path was not found" });
+        }
+
+        var explicitAdapter = string.Equals(request.Adapter, "auto", StringComparison.OrdinalIgnoreCase) ? null : registry.Get(request.Adapter);
+        var suggested = explicitAdapter?.Kind.ToString() ?? registry.IdentifyAutoPath(path)?.Kind.ToString();
+        if (suggested is null)
+        {
+            suggested = SuggestAdapterFromFiles(files);
+        }
+
+        var totalBytes = files.Sum(file => new FileInfo(file).Length);
+        return Results.Ok(new
+        {
+            path,
+            requestedAdapter = request.Adapter,
+            suggestedAdapter = suggested,
+            sampleLimit = 20,
+            sampledFileCount = files.Length,
+            sampledFiles = files.Select(Path.GetFileName).ToArray(),
+            sampledBytes = totalBytes,
+            requiresConfirmation = explicitAdapter is null,
+            canImport = suggested is not null
+        });
+    }
+
+    private static List<string> EnumeratePreviewFiles(string path)
+    {
+        if (File.Exists(path))
+        {
+            return IsSupportedSourceFile(path) ? [path] : [];
+        }
+
+        if (!Directory.Exists(path)) return [];
+        var files = new List<string>();
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(path, "*.*", SearchOption.AllDirectories))
+            {
+                if (!IsSupportedSourceFile(file)) continue;
+                files.Add(file);
+                if (files.Count >= 20) break;
+            }
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+
+        return files;
+    }
+
+    private static bool IsSupportedSourceFile(string path) => Path.GetExtension(path).ToLowerInvariant() is ".json" or ".jsonl" or ".ndjson" or ".csv";
+
+    private static string? SuggestAdapterFromFiles(IEnumerable<string> files)
+    {
+        var names = string.Join(" ", files.Select(Path.GetFileName)).ToLowerInvariant();
+        if (names.Contains("claude") && names.Contains("app")) return SourceAdapterKind.ClaudeCodeApp.ToString();
+        if (names.Contains("claude")) return SourceAdapterKind.ClaudeCodeCli.ToString();
+        if (names.Contains("codex") && names.Contains("app")) return SourceAdapterKind.CodexApp.ToString();
+        if (names.Contains("codex")) return SourceAdapterKind.CodexCli.ToString();
+        return null;
+    }
+
+    private static IResult ImportSource(SourceImportRequest request, SourceAdapterRegistry registry, DashboardDataService data, SourceManagementService sources, SyncJobService jobs, long maxImportBytes)
     {
         try
         {
@@ -338,37 +466,59 @@ public static class ProgramEntry
                     return Results.BadRequest(new { error = "fileName must use .json, .jsonl, .ndjson or .csv" });
                 }
 
-                if (Encoding.UTF8.GetByteCount(request.Content) > MaxImportBytes)
+                if (maxImportBytes > 0 && Encoding.UTF8.GetByteCount(request.Content) > maxImportBytes)
                 {
-                    return Results.BadRequest(new { error = "Import content exceeds the 10 MiB limit" });
+                    return Results.BadRequest(new { error = $"Import content exceeds the configured {maxImportBytes / (1024 * 1024)} MiB limit" });
                 }
 
                 var temporaryPath = Path.Combine(Path.GetTempPath(), $"token-dashboard-import-{Guid.NewGuid():N}{extension}");
                 try
                 {
                     File.WriteAllText(temporaryPath, request.Content, Encoding.UTF8);
-                    return Results.Ok(data.Import(Guid.NewGuid().ToString("N"), temporaryPath, adapter, request.WorkspaceId, request.OwnerId));
+                    if (!jobs.TryEnqueue(new SyncRequest(request.Adapter, [temporaryPath], request.WorkspaceId, request.OwnerId, CleanupPathsAfterCompletion: true), out var syncId, out var active))
+                    {
+                        File.Delete(temporaryPath);
+                        return Results.Conflict(new { error = "A data job is already running", activeJob = active });
+                    }
+
+                    return Results.Accepted($"/api/sync/{syncId}", new { syncId, status = "queued" });
                 }
-                finally
+                catch
                 {
                     if (File.Exists(temporaryPath))
                     {
                         File.Delete(temporaryPath);
                     }
+
+                    throw;
                 }
             }
 
-            if (string.IsNullOrWhiteSpace(request.Path) || !TryGetImportExtension(request.Path, out _))
+            if (!jobs.TryAcquireInline())
             {
-                return Results.BadRequest(new { error = "path must use .json, .jsonl, .ndjson or .csv" });
+                return Results.Conflict(new { error = "A data job is already running" });
             }
 
-            if (!File.Exists(request.Path))
+            try
             {
-                return Results.NotFound(new { error = "Source file was not found" });
-            }
+                if (string.IsNullOrWhiteSpace(request.Path) || !TryGetImportExtension(request.Path, out _))
+                {
+                    return Results.BadRequest(new { error = "path must use .json, .jsonl, .ndjson or .csv" });
+                }
 
-            return Results.Ok(data.Import(Guid.NewGuid().ToString("N"), request.Path, adapter, request.WorkspaceId, request.OwnerId));
+                if (!File.Exists(request.Path))
+                {
+                    return Results.NotFound(new { error = "Source file was not found" });
+                }
+
+                var summary = data.Import(Guid.NewGuid().ToString("N"), request.Path, adapter, request.WorkspaceId, request.OwnerId);
+                sources.MarkSuccess(request.Adapter, request.Path);
+                return Results.Ok(summary);
+            }
+            finally
+            {
+                jobs.ReleaseInline();
+            }
         }
         catch (ArgumentException exception)
         {
@@ -439,7 +589,9 @@ public static class ProgramEntry
     private static IResult Export(ExportRequest request, DashboardReadService dashboard, DashboardDataService data, HttpResponse response)
     {
         var format = request.Format.Trim().ToLowerInvariant();
-        var range = DateRangeResolver.Resolve(request.Preset, request.From, request.To, request.TimeZone);
+        var range = string.IsNullOrWhiteSpace(request.Preset) && string.IsNullOrWhiteSpace(request.From) && string.IsNullOrWhiteSpace(request.To)
+            ? new DateRange(DateTimeOffset.MinValue, DateTimeOffset.MaxValue, DateRangeResolver.FindTimeZone(request.TimeZone).Id)
+            : DateRangeResolver.Resolve(request.Preset, request.From, request.To, request.TimeZone);
         var events = dashboard.Events(range);
         if (format == "csv")
         {
@@ -518,6 +670,11 @@ public static class ProgramEntry
                 foreach (var table in ClearTables)
                 {
                     Execute(connection, transaction, $"DELETE FROM {table};");
+                }
+
+                if (request.RemoveManagedSources)
+                {
+                    Execute(connection, transaction, "DELETE FROM managed_sources;");
                 }
 
                 return;

@@ -406,7 +406,7 @@ public sealed class DataStorageTests
         SchemaMigrator.Migrate(connection);
 
         Assert.Equal(SchemaMigrator.CurrentVersion, Scalar<long>(connection, "SELECT MAX(version) FROM schema_versions;"));
-        Assert.Equal(6L, Scalar<long>(connection, "SELECT COUNT(*) FROM schema_versions;"));
+        Assert.Equal(7L, Scalar<long>(connection, "SELECT COUNT(*) FROM schema_versions;"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'provider';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'mode';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'minimum_input_tokens';"));
@@ -420,6 +420,8 @@ public sealed class DataStorageTests
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'ix_price_versions_provider_model_mode_threshold_interval';"));
         Assert.Equal(0L, Scalar<long>(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'ix_price_versions_model_interval';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'project_tags';"));
+        Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'session_usage_rollups';"));
+        Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'source_file_manifest';"));
     }
 
     private static SqliteConnection OpenConnection()

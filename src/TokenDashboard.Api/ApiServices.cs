@@ -17,7 +17,9 @@ namespace TokenDashboard.Api;
 
 public sealed class ApiOptions
 {
-    public string ConnectionString { get; set; } = "Data Source=token-dashboard.db";
+    public const long DefaultMaxImportBytes = 256L * 1024 * 1024;
+
+    public string? ConnectionString { get; set; }
 
     public bool OpenBrowser { get; set; } = true;
 
@@ -34,6 +36,8 @@ public sealed class ApiOptions
     public string? SourceHome { get; set; }
 
     public string? SourceAppData { get; set; }
+
+    public long MaxImportBytes { get; set; } = DefaultMaxImportBytes;
 }
 
 public sealed class SessionKeyService
@@ -274,7 +278,14 @@ public sealed class DashboardStore : IDisposable
 
     public DashboardStore(IOptions<ApiOptions> options)
     {
-        store = new SqliteDataStore(options.Value.ConnectionString);
+        var connectionString = options.Value.ConnectionString;
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            DatabasePaths.EnsureDefaultDataDirectory();
+            connectionString = DatabasePaths.DefaultConnectionString;
+        }
+
+        store = new SqliteDataStore(connectionString);
     }
 
     public T Read<T>(Func<SqliteConnection, T> action)
@@ -381,7 +392,8 @@ public sealed record SyncRequest(
     string? Adapter,
     IReadOnlyList<string>? Paths,
     string? WorkspaceId = null,
-    string? OwnerId = null);
+    string? OwnerId = null,
+    bool CleanupPathsAfterCompletion = false);
 
 public sealed record SyncStatus(
     Guid SyncId,
@@ -389,22 +401,96 @@ public sealed record SyncStatus(
     DateTimeOffset StartedAtUtc,
     DateTimeOffset? CompletedAtUtc,
     IReadOnlyList<ImportSummary> Imports,
-    string? Error);
+    string? Error,
+    string Phase = "queued",
+    int TotalFiles = 0,
+    int ProcessedFiles = 0,
+    int ImportedEvents = 0,
+    int WarningCount = 0,
+    string? CurrentFileName = null);
 
 public sealed class SyncJobService
 {
     private readonly Channel<(Guid Id, SyncRequest Request)> jobs = Channel.CreateUnbounded<(Guid, SyncRequest)>();
     private readonly ConcurrentDictionary<Guid, SyncStatus> statuses = new();
+    private readonly object gate = new();
+    private Guid? activeJobId;
+    private bool inlineJobActive;
 
     public Guid Enqueue(SyncRequest request)
     {
-        var id = Guid.NewGuid();
-        statuses[id] = new SyncStatus(id, "queued", DateTimeOffset.UtcNow, null, [], null);
-        jobs.Writer.TryWrite((id, request));
-        return id;
+        return TryEnqueue(request, out var id, out _) ? id : throw new InvalidOperationException("A data job is already running");
+    }
+
+    public bool TryEnqueue(SyncRequest request, out Guid id, out SyncStatus? active)
+    {
+        lock (gate)
+        {
+            active = null;
+            if (inlineJobActive)
+            {
+                id = Guid.Empty;
+                return false;
+            }
+
+            if (activeJobId is { } existing && statuses.TryGetValue(existing, out active) && (active.Status is "queued" or "running"))
+            {
+                id = existing;
+                return false;
+            }
+
+            id = Guid.NewGuid();
+            active = null;
+            statuses[id] = new SyncStatus(id, "queued", DateTimeOffset.UtcNow, null, [], null);
+            activeJobId = id;
+            if (!jobs.Writer.TryWrite((id, request)))
+            {
+                statuses.TryRemove(id, out _);
+                activeJobId = null;
+                return false;
+            }
+
+            return true;
+        }
     }
 
     public bool TryGet(Guid id, out SyncStatus? status) => statuses.TryGetValue(id, out status);
+
+    public bool TryGetActive(out SyncStatus? status)
+    {
+        lock (gate)
+        {
+            if (activeJobId is { } id && statuses.TryGetValue(id, out status) && status.Status is "queued" or "running")
+            {
+                return true;
+            }
+
+            status = null;
+            return false;
+        }
+    }
+
+    public bool TryAcquireInline()
+    {
+        lock (gate)
+        {
+            if (inlineJobActive || activeJobId is not null)
+            {
+                return false;
+            }
+
+            inlineJobActive = true;
+            return true;
+        }
+    }
+
+    public void ReleaseInline()
+    {
+        lock (gate)
+        {
+            inlineJobActive = false;
+        }
+    }
 
     public async ValueTask<(Guid Id, SyncRequest Request)> Dequeue(CancellationToken cancellationToken) => await jobs.Reader.ReadAsync(cancellationToken);
 
@@ -412,7 +498,23 @@ public sealed class SyncJobService
     {
         if (statuses.TryGetValue(id, out var status))
         {
-            statuses[id] = status with { Status = "running" };
+            statuses[id] = status with { Status = "running", Phase = "scanning" };
+        }
+    }
+
+    public void UpdateProgress(Guid id, string phase, int totalFiles, int processedFiles, int importedEvents, int warningCount, string? currentFileName)
+    {
+        if (statuses.TryGetValue(id, out var status))
+        {
+            statuses[id] = status with
+            {
+                Phase = phase,
+                TotalFiles = totalFiles,
+                ProcessedFiles = processedFiles,
+                ImportedEvents = importedEvents,
+                WarningCount = warningCount,
+                CurrentFileName = string.IsNullOrWhiteSpace(currentFileName) ? null : Path.GetFileName(currentFileName)
+            };
         }
     }
 
@@ -428,6 +530,13 @@ public sealed class SyncJobService
                 Imports = imports,
                 Error = error
             };
+            lock (gate)
+            {
+                if (activeJobId == id)
+                {
+                    activeJobId = null;
+                }
+            }
         }
     }
 }
@@ -437,13 +546,19 @@ public sealed class SyncWorker : BackgroundService
     private readonly SyncJobService jobs;
     private readonly SourceAdapterRegistry adapters;
     private readonly DashboardStore store;
+    private readonly DashboardDataService data;
+    private readonly SourceManifestService manifests;
+    private readonly SourceManagementService managedSources;
     private readonly IOptions<ApiOptions> options;
 
-    public SyncWorker(SyncJobService jobs, SourceAdapterRegistry adapters, DashboardStore store, IOptions<ApiOptions> options)
+    public SyncWorker(SyncJobService jobs, SourceAdapterRegistry adapters, DashboardStore store, DashboardDataService data, SourceManifestService manifests, SourceManagementService managedSources, IOptions<ApiOptions> options)
     {
         this.jobs = jobs;
         this.adapters = adapters;
         this.store = store;
+        this.data = data;
+        this.manifests = manifests;
+        this.managedSources = managedSources;
         this.options = options;
     }
 
@@ -493,19 +608,78 @@ public sealed class SyncWorker : BackgroundService
                     }
                 }
 
+                var files = new List<(ILogSourceAdapter Adapter, string Path, string SourcePath, ManifestDecision? Manifest)>();
                 foreach (var source in sources)
                 {
+                    var summaryStart = summaries.Count;
+                    if (!job.Request.CleanupPathsAfterCompletion)
+                    {
+                        managedSources.Upsert(new ManagedSourceRequest(source.Adapter.Kind.ToString(), source.Path));
+                    }
+
                     foreach (var file in ExpandSupportedFiles(source.Path, summaries))
                     {
-                        summaries.Add(store.Read(connection => new ImportService(connection).Import(Guid.NewGuid().ToString("N"), file, source.Adapter, file, job.Request.WorkspaceId, job.Request.OwnerId)));
+                        var manifest = job.Request.CleanupPathsAfterCompletion
+                            ? null
+                            : manifests.Prepare(source.Adapter.Kind.ToString(), source.Path, file);
+                        if (manifest is null || !manifest.Skip)
+                        {
+                            files.Add((source.Adapter, file, source.Path, manifest));
+                        }
+                    }
+
+                    if (summaries.Skip(summaryStart).Any(item => item.Status is AdapterCapabilityStatus.NotFound or AdapterCapabilityStatus.PermissionDenied))
+                    {
+                        managedSources.MarkAccessFailure(source.Adapter.Kind.ToString(), source.Path, "來源不存在或沒有存取權限");
                     }
                 }
+
+                jobs.UpdateProgress(job.Id, "importing", files.Count, 0, 0, summaries.Sum(item => item.Errors.Count), null);
+                var processed = 0;
+                foreach (var file in files)
+                {
+                    var importId = Guid.NewGuid().ToString("N");
+                    var summary = store.Read(connection => new ImportService(connection).Import(importId, file.Path, file.Adapter, file.Path, job.Request.WorkspaceId, job.Request.OwnerId));
+                    summaries.Add(summary);
+                    if (!job.Request.CleanupPathsAfterCompletion)
+                    {
+                        manifests.Record(file.Manifest!, importId, summary.Errors.Count == 0 ? "completed" : "partial", summary.Errors.Count == 0 ? null : string.Join("; ", summary.Errors.Select(item => item.Message)));
+                        if (summary.Errors.Count == 0)
+                        {
+                            managedSources.MarkSuccess(file.Adapter.Kind.ToString(), file.SourcePath);
+                        }
+                    }
+                    processed++;
+                    jobs.UpdateProgress(job.Id, "importing", files.Count, processed, summaries.Sum(item => item.ImportedEventCount), summaries.Sum(item => item.Errors.Count), file.Path);
+                }
+
+                jobs.UpdateProgress(job.Id, "materializing", files.Count, processed, summaries.Sum(item => item.ImportedEventCount), summaries.Sum(item => item.Errors.Count), null);
+                data.RebuildRollups(stoppingToken);
 
                 jobs.MarkCompleted(job.Id, summaries);
             }
             catch (Exception exception)
             {
                 jobs.MarkCompleted(job.Id, summaries, exception.Message);
+            }
+            finally
+            {
+                if (job.Request.CleanupPathsAfterCompletion)
+                {
+                    foreach (var path in job.Request.Paths ?? [])
+                    {
+                        try
+                        {
+                            if (File.Exists(path)) File.Delete(path);
+                        }
+                        catch (IOException)
+                        {
+                        }
+                        catch (UnauthorizedAccessException)
+                        {
+                        }
+                    }
+                }
             }
         }
     }
@@ -549,6 +723,72 @@ public sealed class SyncWorker : BackgroundService
     }
 
     private static bool IsSupportedExtension(string path) => Path.GetExtension(path).ToLowerInvariant() is ".json" or ".jsonl" or ".ndjson" or ".csv";
+}
+
+public sealed class StartupDataService : BackgroundService
+{
+    private static readonly Action<ILogger, Exception?> RollupRebuildFailed = LoggerMessage.Define(
+        LogLevel.Warning,
+        new EventId(7101, nameof(RollupRebuildFailed)),
+        "Unable to rebuild usage rollups during startup");
+    private static readonly Action<ILogger, Exception?> StartupSyncSkipped = LoggerMessage.Define(
+        LogLevel.Debug,
+        new EventId(7102, nameof(StartupSyncSkipped)),
+        "Startup source sync was skipped because another data job is already running");
+
+    private readonly DashboardDataService data;
+    private readonly SourceManagementService sources;
+    private readonly SyncJobService jobs;
+    private readonly ILogger<StartupDataService> logger;
+
+    public StartupDataService(
+        DashboardDataService data,
+        SourceManagementService sources,
+        SyncJobService jobs,
+        ILogger<StartupDataService> logger)
+    {
+        this.data = data;
+        this.sources = sources;
+        this.jobs = jobs;
+        this.logger = logger;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        await Task.Yield();
+        if (stoppingToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        try
+        {
+            data.RebuildRollups(stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception exception)
+        {
+            RollupRebuildFailed(logger, exception);
+        }
+
+        var startupSources = sources.List()
+            .Where(static source => source.Enabled && source.RememberOnStartup)
+            .Select(static source => source.Path)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (startupSources.Length == 0 || stoppingToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        if (!jobs.TryEnqueue(new SyncRequest(null, startupSources), out _, out _))
+        {
+            StartupSyncSkipped(logger, null);
+        }
+    }
 }
 
 public sealed record DateRange(DateTimeOffset FromUtc, DateTimeOffset ToUtc, string TimeZoneId);
@@ -940,8 +1180,13 @@ public sealed class DashboardDataService
 
     public ImportSummary Import(string importId, string path, ILogSourceAdapter adapter, string? workspaceId, string? ownerId)
     {
-        return store.Read(connection => new ImportService(connection).Import(importId, path, adapter, path, workspaceId, ownerId));
+        var summary = store.Read(connection => new ImportService(connection).Import(importId, path, adapter, path, workspaceId, ownerId));
+        RebuildRollups();
+        return summary;
     }
+
+    public void RebuildRollups(CancellationToken cancellationToken = default)
+        => store.Write(connection => UsageRollupService.Rebuild(connection, cancellationToken));
 
     public void RebuildFts() => store.Write(FtsIndexingService.Rebuild);
 
@@ -1016,6 +1261,158 @@ public sealed class DashboardDataService
         });
     }
 }
+
+public sealed class SourceManagementService
+{
+    private readonly DashboardDataService data;
+
+    public SourceManagementService(DashboardDataService data) => this.data = data;
+
+    public IReadOnlyList<ManagedSourceDto> List() => data.Query("""
+        SELECT source_id, adapter_kind, source_path, enabled, remember_on_startup,
+               last_success_at_utc, last_error, created_at_utc, updated_at_utc
+        FROM managed_sources
+        ORDER BY enabled DESC, source_path COLLATE NOCASE;
+        """).Select(ToDto).ToArray();
+
+    public ManagedSourceDto Upsert(ManagedSourceRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Adapter) || string.IsNullOrWhiteSpace(request.Path))
+        {
+            throw new ArgumentException("adapter and path are required");
+        }
+
+        var path = Path.GetFullPath(request.Path.Trim());
+        var id = StableId(request.Adapter, path);
+        var now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        data.Execute("""
+            INSERT INTO managed_sources
+                (source_id, adapter_kind, source_path, enabled, remember_on_startup, created_at_utc, updated_at_utc)
+            VALUES ($id, $adapter, $path, $enabled, $remember, $now, $now)
+            ON CONFLICT(source_id) DO UPDATE SET
+                adapter_kind = excluded.adapter_kind,
+                source_path = excluded.source_path,
+                enabled = excluded.enabled,
+                remember_on_startup = excluded.remember_on_startup,
+                updated_at_utc = excluded.updated_at_utc;
+            """,
+            ("$id", id),
+            ("$adapter", request.Adapter),
+            ("$path", path),
+            ("$enabled", request.Enabled ? 1 : 0),
+            ("$remember", request.RememberOnStartup ? 1 : 0),
+            ("$now", now));
+        return List().Single(item => string.Equals(item.Id, id, StringComparison.Ordinal));
+    }
+
+    public bool SetEnabled(string id, bool enabled, string? error = null)
+    {
+        var updated = data.Query("SELECT source_id FROM managed_sources WHERE source_id = $id;", ("$id", id)).Count > 0;
+        if (!updated) return false;
+        data.Execute("UPDATE managed_sources SET enabled = $enabled, last_error = $error, updated_at_utc = $now WHERE source_id = $id;", ("$id", id), ("$enabled", enabled ? 1 : 0), ("$error", (object?)error ?? DBNull.Value), ("$now", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)));
+        return true;
+    }
+
+    public bool Delete(string id)
+    {
+        var exists = data.Query("SELECT source_id FROM managed_sources WHERE source_id = $id;", ("$id", id)).Count > 0;
+        if (exists) data.Execute("DELETE FROM managed_sources WHERE source_id = $id;", ("$id", id));
+        return exists;
+    }
+
+    public void MarkSuccess(string adapter, string path)
+    {
+        var source = Upsert(new ManagedSourceRequest(adapter, path));
+        data.Execute("UPDATE managed_sources SET last_success_at_utc = $now, last_error = NULL, updated_at_utc = $now WHERE source_id = $id;", ("$id", source.Id), ("$now", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)));
+    }
+
+    public void MarkAccessFailure(string adapter, string path, string error)
+    {
+        var source = Upsert(new ManagedSourceRequest(adapter, path));
+        data.Execute("UPDATE managed_sources SET enabled = 0, last_error = $error, updated_at_utc = $now WHERE source_id = $id;", ("$id", source.Id), ("$error", error), ("$now", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)));
+    }
+
+    public static string StableId(string adapter, string path)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{adapter}\n{Path.GetFullPath(path.Trim())}"))).ToLowerInvariant();
+
+    private static ManagedSourceDto ToDto(Dictionary<string, object?> row) => new(
+        Convert.ToString(row["source_id"], CultureInfo.InvariantCulture) ?? string.Empty,
+        Convert.ToString(row["adapter_kind"], CultureInfo.InvariantCulture) ?? string.Empty,
+        Convert.ToString(row["source_path"], CultureInfo.InvariantCulture) ?? string.Empty,
+        Convert.ToInt32(row["enabled"], CultureInfo.InvariantCulture) != 0,
+        Convert.ToInt32(row["remember_on_startup"], CultureInfo.InvariantCulture) != 0,
+        row["last_success_at_utc"] is null ? null : Convert.ToString(row["last_success_at_utc"], CultureInfo.InvariantCulture),
+        row["last_error"] is null ? null : Convert.ToString(row["last_error"], CultureInfo.InvariantCulture));
+}
+
+public sealed class SourceManifestService
+{
+    private readonly DashboardDataService data;
+
+    public SourceManifestService(DashboardDataService data) => this.data = data;
+
+    public ManifestDecision Prepare(string adapter, string sourcePath, string path)
+    {
+        var info = new FileInfo(path);
+        var sourceId = SourceManagementService.StableId(adapter, sourcePath);
+        var modified = info.LastWriteTimeUtc.ToString("O", CultureInfo.InvariantCulture);
+        var existing = data.Query("SELECT size_bytes, modified_at_utc, content_hash, last_status FROM source_file_manifest WHERE source_id = $sourceId AND path = $path;", ("$sourceId", sourceId), ("$path", Path.GetFullPath(path))).SingleOrDefault();
+        if (existing is not null && Convert.ToInt64(existing["size_bytes"], CultureInfo.InvariantCulture) == info.Length && string.Equals(Convert.ToString(existing["modified_at_utc"], CultureInfo.InvariantCulture), modified, StringComparison.Ordinal) && string.Equals(Convert.ToString(existing["last_status"], CultureInfo.InvariantCulture), "completed", StringComparison.OrdinalIgnoreCase))
+        {
+            return new ManifestDecision(sourceId, Path.GetFullPath(path), info.Length, modified, null, true);
+        }
+
+        var hash = HashFile(path);
+        if (existing is not null && string.Equals(Convert.ToString(existing["content_hash"], CultureInfo.InvariantCulture), hash, StringComparison.OrdinalIgnoreCase) && string.Equals(Convert.ToString(existing["last_status"], CultureInfo.InvariantCulture), "completed", StringComparison.OrdinalIgnoreCase))
+        {
+            return new ManifestDecision(sourceId, Path.GetFullPath(path), info.Length, modified, hash, true);
+        }
+
+        return new ManifestDecision(sourceId, Path.GetFullPath(path), info.Length, modified, hash, false);
+    }
+
+    public void Record(ManifestDecision decision, string importId, string status, string? error = null)
+    {
+        var manifestId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{decision.SourceId}\n{decision.Path}"))).ToLowerInvariant();
+        data.Execute("""
+            INSERT INTO source_file_manifest
+                (manifest_id, source_id, path, size_bytes, modified_at_utc, content_hash, last_import_id, last_status, last_error, updated_at_utc)
+            VALUES ($id, $sourceId, $path, $size, $modified, $hash, $importId, $status, $error, $now)
+            ON CONFLICT(source_id, path) DO UPDATE SET
+                size_bytes = excluded.size_bytes,
+                modified_at_utc = excluded.modified_at_utc,
+                content_hash = excluded.content_hash,
+                last_import_id = excluded.last_import_id,
+                last_status = excluded.last_status,
+                last_error = excluded.last_error,
+                updated_at_utc = excluded.updated_at_utc;
+            """,
+            ("$id", manifestId), ("$sourceId", decision.SourceId), ("$path", decision.Path),
+            ("$size", decision.SizeBytes), ("$modified", decision.ModifiedAtUtc), ("$hash", (object?)decision.ContentHash ?? DBNull.Value),
+            ("$importId", importId), ("$status", status), ("$error", (object?)error ?? DBNull.Value), ("$now", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)));
+    }
+
+    private static string HashFile(string path)
+    {
+        using var stream = File.OpenRead(path);
+        using var sha = System.Security.Cryptography.IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[1024 * 1024];
+        int read;
+        while ((read = stream.Read(buffer, 0, buffer.Length)) > 0) sha.AppendData(buffer, 0, read);
+        return Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant();
+    }
+}
+
+public sealed record ManifestDecision(string SourceId, string Path, long SizeBytes, string ModifiedAtUtc, string? ContentHash, bool Skip);
+
+public sealed record ManagedSourceDto(
+    string Id,
+    string Adapter,
+    string Path,
+    bool Enabled,
+    bool RememberOnStartup,
+    string? LastSuccessAtUtc,
+    string? LastError);
 
 public sealed class BudgetService
 {

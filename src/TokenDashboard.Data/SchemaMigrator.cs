@@ -4,7 +4,7 @@ namespace TokenDashboard.Data;
 
 public sealed class SchemaMigrator
 {
-    public const int CurrentVersion = 7;
+    public const int CurrentVersion = 8;
 
     public static void Migrate(SqliteConnection connection)
     {
@@ -32,7 +32,8 @@ public sealed class SchemaMigrator
         {
             ApplyLatestSchema(transaction);
             ApplyVersionSeven(transaction);
-            Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) VALUES (7, $appliedAtUtc);", ("$appliedAtUtc", UtcNow()));
+            ApplyVersionEight(transaction);
+            Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) VALUES (8, $appliedAtUtc);", ("$appliedAtUtc", UtcNow()));
         }
         else
         {
@@ -75,6 +76,13 @@ public sealed class SchemaMigrator
                 ApplyVersionSeven(transaction);
                 Execute(transaction, "UPDATE schema_versions SET version = 7, applied_at_utc = $appliedAtUtc WHERE version = 6;", ("$appliedAtUtc", UtcNow()));
                 Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) SELECT 7, $appliedAtUtc WHERE NOT EXISTS (SELECT 1 FROM schema_versions WHERE version = 7);", ("$appliedAtUtc", UtcNow()));
+                version = 7;
+            }
+
+            if (version < 8)
+            {
+                ApplyVersionEight(transaction);
+                Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) SELECT 8, $appliedAtUtc WHERE NOT EXISTS (SELECT 1 FROM schema_versions WHERE version = 8);", ("$appliedAtUtc", UtcNow()));
             }
         }
 
@@ -347,6 +355,118 @@ public sealed class SchemaMigrator
                 CHECK (to_date IS NULL OR to_date >= from_date)
             );
             CREATE INDEX IF NOT EXISTS ix_budgets_period_dates ON budgets (enabled, from_date, to_date);
+            """);
+    }
+
+    private static void ApplyVersionEight(SqliteTransaction transaction)
+    {
+        Execute(transaction, """
+            CREATE TABLE IF NOT EXISTS managed_sources
+            (
+                source_id TEXT PRIMARY KEY,
+                adapter_kind TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                remember_on_startup INTEGER NOT NULL DEFAULT 1 CHECK (remember_on_startup IN (0, 1)),
+                last_success_at_utc TEXT,
+                last_error TEXT,
+                created_at_utc TEXT NOT NULL,
+                updated_at_utc TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS source_file_manifest
+            (
+                manifest_id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                modified_at_utc TEXT NOT NULL,
+                content_hash TEXT,
+                last_import_id TEXT,
+                last_status TEXT NOT NULL DEFAULT 'pending',
+                last_error TEXT,
+                updated_at_utc TEXT NOT NULL,
+                FOREIGN KEY (source_id) REFERENCES managed_sources (source_id) ON DELETE CASCADE,
+                UNIQUE (source_id, path)
+            );
+
+            CREATE TABLE IF NOT EXISTS import_jobs
+            (
+                job_id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                started_at_utc TEXT NOT NULL,
+                completed_at_utc TEXT,
+                total_files INTEGER NOT NULL DEFAULT 0,
+                processed_files INTEGER NOT NULL DEFAULT 0,
+                imported_events INTEGER NOT NULL DEFAULT 0,
+                warning_count INTEGER NOT NULL DEFAULT 0,
+                current_file_name TEXT,
+                error TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS turn_usage_facts
+            (
+                turn_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                occurred_at_utc TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                model TEXT NOT NULL DEFAULT '',
+                tool TEXT NOT NULL DEFAULT '',
+                event_count INTEGER NOT NULL DEFAULT 0,
+                accounting_event_fingerprint TEXT,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                cost_coverage_tokens INTEGER NOT NULL DEFAULT 0,
+                refreshed_at_utc TEXT NOT NULL,
+                FOREIGN KEY (turn_id) REFERENCES turns (turn_id) ON DELETE CASCADE,
+                FOREIGN KEY (session_id) REFERENCES sessions (session_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS turn_usage_tokens
+            (
+                turn_id TEXT NOT NULL,
+                token_type TEXT NOT NULL,
+                token_count INTEGER NOT NULL CHECK (token_count >= 0),
+                PRIMARY KEY (turn_id, token_type),
+                FOREIGN KEY (turn_id) REFERENCES turns (turn_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS session_usage_rollups
+            (
+                session_id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                started_at_utc TEXT NOT NULL,
+                last_activity_at_utc TEXT NOT NULL,
+                event_count INTEGER NOT NULL DEFAULT 0,
+                turn_count INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                priced_tokens INTEGER NOT NULL DEFAULT 0,
+                unpriced_tokens INTEGER NOT NULL DEFAULT 0,
+                refreshed_at_utc TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions (session_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS daily_usage_rollups
+            (
+                bucket_date TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                tool TEXT NOT NULL,
+                event_count INTEGER NOT NULL DEFAULT 0,
+                turn_count INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                refreshed_at_utc TEXT NOT NULL,
+                PRIMARY KEY (bucket_date, source_id, model, tool)
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_source_manifest_source_path ON source_file_manifest (source_id, path);
+            CREATE INDEX IF NOT EXISTS ix_source_manifest_modified ON source_file_manifest (modified_at_utc);
+            CREATE INDEX IF NOT EXISTS ix_import_jobs_status_started ON import_jobs (status, started_at_utc);
+            CREATE INDEX IF NOT EXISTS ix_turn_usage_facts_session_time ON turn_usage_facts (session_id, occurred_at_utc);
+            CREATE INDEX IF NOT EXISTS ix_turn_usage_facts_source_time ON turn_usage_facts (source_id, occurred_at_utc);
+            CREATE INDEX IF NOT EXISTS ix_session_rollups_activity ON session_usage_rollups (last_activity_at_utc, session_id);
+            CREATE INDEX IF NOT EXISTS ix_daily_rollups_date ON daily_usage_rollups (bucket_date, source_id);
             """);
     }
 

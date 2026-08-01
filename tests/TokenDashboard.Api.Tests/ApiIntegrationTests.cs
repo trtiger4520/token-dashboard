@@ -226,6 +226,37 @@ public sealed class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task SnapshotPaginationTimelineAndManagedSourcesAvoidEagerSessionDetails()
+    {
+        using var factory = new ApiFactory();
+        using var client = factory.CreateAuthenticatedClient();
+        var path = WriteFixture("""
+            [
+              {"source_id":"snapshot-source","session_id":"snapshot-session","turn_id":"snapshot-turn-1","sequence":1,"event_type":"prompt","occurred_at_utc":"2026-07-09T00:00:00Z","source_timezone":"UTC","prompt":"masked prompt","model":"gpt-5.4","input_tokens":3},
+              {"source_id":"snapshot-source","session_id":"snapshot-session","turn_id":"snapshot-turn-1","sequence":1,"event_type":"tool","occurred_at_utc":"2026-07-09T00:00:01Z","source_timezone":"UTC","tool":"rg","payload":"private payload"}
+            ]
+            """);
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", path))).StatusCode);
+
+        var snapshot = await client.GetFromJsonAsync<JsonElement>("/api/dashboard-snapshot?from=2026-07-09&to=2026-07-10&pageSize=50");
+        Assert.Equal(1, snapshot.GetProperty("sessions").GetArrayLength());
+        Assert.True(snapshot.GetProperty("sessions")[0].GetProperty("turnCount").GetInt32() >= 1);
+        Assert.DoesNotContain("turns", snapshot.GetProperty("sessions")[0].EnumerateObject().Select(property => property.Name), StringComparer.OrdinalIgnoreCase);
+
+        var page = await client.GetFromJsonAsync<JsonElement>("/api/sessions/page?from=2026-07-09&to=2026-07-10&pageSize=50");
+        Assert.Equal(1, page.GetProperty("items").GetArrayLength());
+        var timeline = await client.GetFromJsonAsync<JsonElement>("/api/sessions/snapshot-session/timeline?pageSize=100");
+        Assert.Equal(1, timeline.GetProperty("items").GetArrayLength());
+        Assert.True(timeline.GetProperty("items")[0].GetProperty("events")[0].GetProperty("contentMasked").GetBoolean());
+
+        var managed = await client.GetFromJsonAsync<JsonElement>("/api/sources/managed");
+        Assert.Contains(managed.EnumerateArray(), item => item.GetProperty("path").GetString() == Path.GetFullPath(path));
+        var preview = await client.PostAsJsonAsync("/api/sources/preview", new SourcePreviewRequest("auto", path));
+        Assert.Equal(HttpStatusCode.OK, preview.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await client.GetAsync("/api/import-jobs/active")).StatusCode);
+    }
+
+    [Fact]
     public async Task ImportSupportsTimezoneGroupingFtsTagsAndPricingCatalog()
     {
         using var factory = new ApiFactory();
@@ -268,23 +299,25 @@ public sealed class ApiIntegrationTests
         var path = WriteFixture("""{"source_id":"export-source","session_id":"export-session","turn_id":"export-turn","occurred_at_utc":"2026-07-02T00:00:00Z","source_timezone":"UTC","prompt":"private prompt","response":"private response","model":"unknown-model","input_tokens":1,"output_tokens":1}""");
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", path))).StatusCode);
 
-        var csv = await client.PostAsJsonAsync("/api/export", new ExportRequest("csv"));
+        const string from = "2026-07-02";
+        const string to = "2026-07-03";
+        var csv = await client.PostAsJsonAsync("/api/export", new ExportRequest("csv", From: from, To: to));
         var csvBody = await csv.Content.ReadAsStringAsync();
         Assert.DoesNotContain("private prompt", csvBody);
 
-        var json = await client.PostAsJsonAsync("/api/export", new ExportRequest("json"));
+        var json = await client.PostAsJsonAsync("/api/export", new ExportRequest("json", From: from, To: to));
         var jsonBody = await json.Content.ReadAsStringAsync();
         Assert.DoesNotContain("private prompt", jsonBody);
         Assert.DoesNotContain("sensitive", jsonBody);
         Assert.False(json.Headers.Contains("X-Token-Dashboard-Export-Warning"));
 
-        var jsonWithContent = await client.PostAsJsonAsync("/api/export", new ExportRequest("json", IncludeContent: true, ConfirmIncludeContent: true));
+        var jsonWithContent = await client.PostAsJsonAsync("/api/export", new ExportRequest("json", IncludeContent: true, ConfirmIncludeContent: true, From: from, To: to));
         var jsonWithContentBody = await jsonWithContent.Content.ReadAsStringAsync();
         Assert.Contains("private prompt", jsonWithContentBody);
         Assert.Contains("sensitive", jsonWithContentBody);
         Assert.True(jsonWithContent.Headers.Contains("X-Token-Dashboard-Export-Warning"));
 
-        var sqlite = await client.PostAsJsonAsync("/api/export", new ExportRequest("sqlite"));
+        var sqlite = await client.PostAsJsonAsync("/api/export", new ExportRequest("sqlite", From: from, To: to));
         Assert.True(sqlite.Headers.Contains("X-Token-Dashboard-Export-Warning"));
         Assert.Equal("SQLite format 3", Encoding.UTF8.GetString((await sqlite.Content.ReadAsByteArrayAsync())[0..15]));
 
@@ -411,8 +444,7 @@ public sealed class ApiIntegrationTests
         using var factory = new ApiFactory();
         using var client = factory.CreateAuthenticatedClient();
         var content = "{\"source_id\":\"cache-source\",\"session_id\":\"cache-session\",\"turn_id\":\"cache-turn\",\"occurred_at_utc\":\"2026-07-05T00:00:00Z\",\"source_timezone\":\"UTC\",\"model\":\"gpt-5.4\",\"input_tokens\":75,\"cache_read_tokens\":25}";
-        var response = await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", null, "cache.json", content));
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await ImportContentAndWait(client, new SourceImportRequest("codex-cli", null, "cache.json", content));
         var overview = await client.GetFromJsonAsync<JsonElement>("/api/overview?from=2026-07-05&to=2026-07-06");
         Assert.Equal(0.25m, overview.GetProperty("cacheHitRate").GetDecimal());
         Assert.Equal(25, overview.GetProperty("cachedInputTokens").GetInt64());
@@ -430,8 +462,7 @@ public sealed class ApiIntegrationTests
             {"timestamp":"2026-07-26T02:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300000,"output_tokens":100,"reasoning_output_tokens":20,"total_tokens":300100}}}}
             """;
 
-        var response = await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", null, "suggest.jsonl", content));
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await ImportContentAndWait(client, new SourceImportRequest("codex-cli", null, "suggest.jsonl", content));
 
         var unknown = await client.GetFromJsonAsync<JsonElement>("/api/pricing/unknown?from=2026-07-26&to=2026-07-27");
         var reasoning = unknown.EnumerateArray().Single(item => item.GetProperty("tokenType").GetString() == "reasoning");
@@ -480,25 +511,36 @@ public sealed class ApiIntegrationTests
             {"timestamp":"2026-07-31T00:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100}}}}
             """;
 
-        var response = await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", null, "fast.jsonl", content));
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await ImportContentAndWait(client, new SourceImportRequest("codex-cli", null, "fast.jsonl", content));
 
         var overview = await client.GetFromJsonAsync<JsonElement>("/api/overview?from=2026-07-31&to=2026-08-01");
         Assert.Equal(0.0004m, overview.GetProperty("costUsd").GetDecimal());
     }
 
     [Fact]
-    public async Task ContentImportDeletesTemporaryFileAndValidatesExtension()
+    public async Task ContentImportQueuesWorkAndDeletesTemporaryFileAfterCompletion()
     {
         using var factory = new ApiFactory();
         using var client = factory.CreateAuthenticatedClient();
         var content = "{\"source_id\":\"inline-source\",\"session_id\":\"inline-session\",\"turn_id\":\"inline-turn\",\"occurred_at_utc\":\"2026-07-06T00:00:00Z\",\"source_timezone\":\"UTC\",\"prompt\":\"inline prompt\"}";
-        var response = await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", null, "inline.json", content));
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var completed = await ImportContentAndWait(client, new SourceImportRequest("codex-cli", null, "inline.json", content));
+        Assert.Equal("completed", completed.GetProperty("status").GetString());
         Assert.Empty(Directory.GetFiles(Path.GetTempPath(), "token-dashboard-import-*.json"));
 
         var invalid = await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", null, "inline.exe", content));
         Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+    }
+
+    [Fact]
+    public async Task ContentImportAllowsZeroConfiguredLimit()
+    {
+        using var factory = new ApiFactory { MaxImportBytes = 0 };
+        using var client = factory.CreateAuthenticatedClient();
+        const string content = "{\"source_id\":\"unlimited-source\",\"session_id\":\"unlimited-session\",\"turn_id\":\"unlimited-turn\",\"occurred_at_utc\":\"2026-07-06T00:00:00Z\",\"source_timezone\":\"UTC\",\"prompt\":\"unlimited inline prompt\"}";
+
+        var completed = await ImportContentAndWait(client, new SourceImportRequest("codex-cli", null, "unlimited.json", content));
+
+        Assert.Equal("completed", completed.GetProperty("status").GetString());
     }
 
     [Fact]
@@ -608,7 +650,7 @@ public sealed class ApiIntegrationTests
         using var client = factory.CreateAuthenticatedClient();
         const string sentinel = "raw-only-sentinel-7f2a";
         var content = "{\"source_id\":\"raw-source\",\"session_id\":\"raw-session\",\"turn_id\":\"raw-turn\",\"occurred_at_utc\":\"2026-07-12T00:00:00Z\",\"source_timezone\":\"UTC\",\"prompt\":\"kept prompt\",\"" + sentinel + "\":\"must not persist\",\"input_tokens\":1}";
-        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", null, "raw.json", content))).StatusCode);
+        await ImportContentAndWait(client, new SourceImportRequest("codex-cli", null, "raw.json", content));
         var storePayload = factory.Services.GetRequiredService<DashboardDataService>().Query("SELECT payload FROM sub_events WHERE source_id = 'raw-source';").Single()["payload"]?.ToString();
         Assert.DoesNotContain(sentinel, storePayload);
         var json = await client.PostAsJsonAsync("/api/export", new ExportRequest("json"));
@@ -754,6 +796,14 @@ public sealed class ApiIntegrationTests
 
         throw new TimeoutException("Sync did not complete deterministically");
     }
+
+    private static async Task<JsonElement> ImportContentAndWait(HttpClient client, SourceImportRequest request)
+    {
+        var response = await client.PostAsJsonAsync("/api/sources/import", request);
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        var queued = await response.Content.ReadFromJsonAsync<JsonElement>();
+        return await WaitForSync(client, queued.GetProperty("syncId").GetGuid());
+    }
 }
 
 public sealed class ApiFactory : WebApplicationFactory<Program>
@@ -764,6 +814,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
 
     public string? SourceAppData { get; set; }
 
+    public long? MaxImportBytes { get; set; }
+
     protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -772,7 +824,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             ["TokenDashboard:ConnectionString"] = $"Data Source=api-test-{Guid.NewGuid():N};Mode=Memory;Cache=Shared",
             ["TokenDashboard:OpenBrowser"] = "false",
             ["TokenDashboard:SourceHome"] = SourceHome,
-            ["TokenDashboard:SourceAppData"] = SourceAppData
+            ["TokenDashboard:SourceAppData"] = SourceAppData,
+            ["TokenDashboard:MaxImportBytes"] = MaxImportBytes?.ToString(CultureInfo.InvariantCulture)
         }));
     }
 
