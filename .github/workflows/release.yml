@@ -45,6 +45,8 @@ jobs:
   resolve:
     needs: verify
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     outputs:
       hasRelease: ${{ steps.release.outputs.hasRelease }}
       version: ${{ steps.release.outputs.version }}
