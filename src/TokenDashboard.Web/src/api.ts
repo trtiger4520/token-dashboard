@@ -13,12 +13,28 @@ export interface SyncStatus {
   syncId: string
   status: 'queued' | 'running' | 'completed' | 'partial' | 'failed' | string
   error?: string | null
+  phase?: string
+  totalFiles?: number
+  processedFiles?: number
+  importedEvents?: number
+  warningCount?: number
+  currentFileName?: string | null
 }
 
 export interface SourceDiscoveryResult {
   adapter: string
   capabilities: CapabilityRecord | null
   paths: string[]
+}
+
+export interface ManagedSource {
+  id: string
+  adapter: string
+  path: string
+  enabled: boolean
+  rememberOnStartup: boolean
+  lastSuccessAtUtc: string | null
+  lastError: string | null
 }
 
 export interface TagRequest {
@@ -275,8 +291,8 @@ function normalizeSession(summary: JsonRecord, detail: JsonRecord | undefined): 
     title: stringValue(summary, 'title') || `Session ${stringValue(summary, 'id', 'sessionId', 'session_id').slice(0, 8)}`,
     workspaceId: nullableString(summary, 'workspaceId', 'workspace_id') ?? nullableString(detailSession, 'workspace_id', 'workspaceId'),
     source: stringValue(summary, 'sourceId', 'source_id') || stringValue(detailSession, 'source_id'),
-    tool: turns.flatMap((turn) => turn.events).find((event) => event.tool)?.tool ?? (firstEvent?.kind === 'tool' ? firstEvent.summary : ''),
-    model: firstPrompt?.model || '',
+    tool: stringValue(summary, 'tool') || (turns.flatMap((turn) => turn.events).find((event) => event.tool)?.tool ?? (firstEvent?.kind === 'tool' ? firstEvent.summary : '')),
+    model: stringValue(summary, 'model') || firstPrompt?.model || '',
     effort: firstPromptTurn?.effort ?? null,
     additionalModelCount: firstPrompt?.model ? Math.max(0, knownModels.length - 1) : 0,
     additionalEffortCount: firstPromptTurn?.effort ? Math.max(0, knownEfforts.length - 1) : 0,
@@ -285,7 +301,7 @@ function normalizeSession(summary: JsonRecord, detail: JsonRecord | undefined): 
     tokens: turns.reduce<TokenBreakdown>((total, turn) => {
       for (const [key, value] of Object.entries(turn.tokens)) total[key] = (total[key] ?? 0) + value
       return total
-    }, {}),
+    }, Object.keys(rowTokenCounts(summary)).length ? rowTokenCounts(summary) : {}),
     costUsd: nullableNumber(summary, 'costUsd', 'cost_usd') ?? nullableNumber(detailSession, 'costUsd', 'cost_usd'),
     eventCount: numberValue(summary, 'eventCount', 'event_count'),
     turnCount: numberValue(summary, 'turnCount', 'turn_count'),
@@ -409,21 +425,14 @@ export class TokenDashboardClient {
 
   async getDashboard(query: DashboardQuery): Promise<DashboardData> {
     const range = queryString(query)
-    const [overview, trend, monthly, comparisonTree, heatmap, sessionRows, capabilities, pricing, tagPayload] = await Promise.all([
-      this.json<JsonRecord>(`/api/overview?${range}`),
-      this.json<unknown[]>(`/api/usage/trend?${range}`),
-      this.json<unknown[]>(`/api/usage/monthly?${range}`),
-      this.json<unknown[]>(`/api/comparisons/tree?${range}`),
-      this.json<unknown[]>(`/api/heatmap?${range}`),
-      this.json<unknown[]>(`/api/sessions?${range}`),
+    const [snapshot, capabilities, pricing, tagPayload] = await Promise.all([
+      this.json<JsonRecord>(`/api/dashboard-snapshot?${range}&pageSize=50`),
       this.json<unknown[]>(`/api/sources/capabilities?${range}`),
       this.json<JsonRecord>(`/api/pricing?${range}`),
       this.json<unknown[]>(`/api/tags?${range}`)
     ])
-    const summaries = records(sessionRows)
-    const details = await Promise.all(summaries.map((summary) => this.json<JsonRecord>(`/api/sessions/${encodeURIComponent(stringValue(summary, 'id', 'sessionId', 'session_id'))}`)))
-    const normalizedSessions = summaries.map((summary, index) => normalizeSession(summary, details[index]))
-    const normalizedTree = records(comparisonTree).map(normalizeComparisonTree)
+    const normalizedSessions = records(snapshot.sessions).map((summary) => normalizeSession(summary, undefined))
+    const normalizedTree = records(snapshot.comparisonTree).map(normalizeComparisonTree)
     const normalizedComparisons = normalizedTree.map((row) => ({
       name: row.name,
       kind: 'model' as const,
@@ -442,7 +451,7 @@ export class TokenDashboardClient {
     for (const session of normalizedSessions) {
       session.tags = normalizedTags.filter((tag) => tag.scope === 'session' && tag.entityId === session.id).map((tag) => tag.key || tag.value)
     }
-    const normalizedOverview = normalizeOverview(overview)
+    const normalizedOverview = normalizeOverview((snapshot.overview as JsonRecord | undefined) ?? {})
     const tokenTypes = [...new Set([
       ...normalizedSessions.flatMap((session) => Object.keys(session.tokens)),
       ...pricingEntries.map((entry) => entry.tokenType),
@@ -455,13 +464,15 @@ export class TokenDashboardClient {
       tools: [...new Set(normalizedTree.flatMap((row) => row.children.map((child) => child.name)).filter(Boolean))],
       models: [...new Set(normalizedTree.map((row) => row.name).filter(Boolean))],
       tokenTypes,
-      trend: records(trend).map(normalizeTrend),
+      trend: records(snapshot.trend).map(normalizeTrend),
       daily: [],
-      monthly: records(monthly).map(normalizeDaily),
-      heatmap: records(heatmap).map(normalizeDaily),
+      monthly: records(snapshot.monthly).map(normalizeDaily),
+      heatmap: records(snapshot.heatmap).map(normalizeDaily),
       comparisons: normalizedComparisons,
       comparisonTree: normalizedTree,
       sessions: normalizedSessions,
+      sessionsNextCursor: typeof snapshot.nextCursor === 'string' ? snapshot.nextCursor : null,
+      sessionsHasMore: Boolean(snapshot.hasMore),
       tags: normalizedTags,
       capabilities: normalizedCapabilities.map((item) => `${item.adapterKind}: ${item.status} · ${item.formats.join(', ')}`),
       pricing: {
@@ -474,13 +485,30 @@ export class TokenDashboardClient {
     }
   }
 
+  async getSessionPage(query: DashboardQuery, cursor?: string | null): Promise<{ items: SessionRecord[]; nextCursor: string | null; hasMore: boolean }> {
+    const range = queryString(query)
+    const params = new URLSearchParams(range)
+    params.set('pageSize', '50')
+    if (cursor) params.set('cursor', cursor)
+    const payload = await this.json<JsonRecord>(`/api/sessions/page?${params.toString()}`)
+    const rows = records(payload.items).map((row) => normalizeSession(row, undefined))
+    return { items: rows, nextCursor: typeof payload.nextCursor === 'string' ? payload.nextCursor : null, hasMore: Boolean(payload.hasMore) }
+  }
+
+  async getSessionTimeline(sessionId: string, cursor?: string | null, reveal = false): Promise<JsonRecord> {
+    const params = new URLSearchParams({ pageSize: '100' })
+    if (cursor) params.set('cursor', cursor)
+    if (reveal) params.set('reveal', 'true')
+    return this.json<JsonRecord>(`/api/sessions/${encodeURIComponent(sessionId)}/timeline?${params.toString()}`)
+  }
+
   async search(query: string): Promise<SearchResult[]> {
     const payload = await this.json<{ results?: SearchResult[] }>(`/api/search?q=${encodeURIComponent(query)}`)
     return payload.results ?? []
   }
 
-  async deleteAll(): Promise<void> {
-    await this.json('/api/data', { method: 'DELETE', body: JSON.stringify({ clearAll: true }) })
+  async deleteAll(removeManagedSources = false): Promise<void> {
+    await this.json('/api/data', { method: 'DELETE', body: JSON.stringify({ clearAll: true, removeManagedSources }) })
   }
 
   async startSync(request: SyncRequest): Promise<SyncStatus> {
@@ -491,13 +519,20 @@ export class TokenDashboardClient {
     return this.json<SyncStatus>(`/api/sync/${encodeURIComponent(syncId)}`)
   }
 
-  async waitForSync(syncId: string, intervalMs = 100): Promise<SyncStatus> {
-    for (let attempt = 0; attempt < 100; attempt++) {
+  async getActiveJob(): Promise<SyncStatus | null> {
+    const response = await this.response('/api/import-jobs/active')
+    if (response.status === 204) return null
+    return (await response.json()) as SyncStatus
+  }
+
+  async waitForSync(syncId: string, intervalMs = 500): Promise<SyncStatus> {
+    let delay = intervalMs
+    for (;;) {
       const status = await this.getSyncStatus(syncId)
       if (['completed', 'partial', 'failed'].includes(status.status)) return status
-      await new Promise((resolve) => window.setTimeout(resolve, intervalMs))
+      await new Promise((resolve) => window.setTimeout(resolve, delay))
+      delay = Math.min(2000, Math.round(delay * 1.5))
     }
-    throw new ApiError('同步狀態輪詢逾時')
   }
 
   async discoverSources(adapter: string, path?: string): Promise<SourceDiscoveryResult[]> {
@@ -506,7 +541,27 @@ export class TokenDashboardClient {
     return normalizeSourceDiscovery(await this.json(`/api/sources/discovery?${params.toString()}`))
   }
 
-  async importFile(file: File, adapter?: string): Promise<unknown> {
+  async previewSource(adapter: string, path: string): Promise<JsonRecord> {
+    return this.json<JsonRecord>('/api/sources/preview', { method: 'POST', body: JSON.stringify({ adapter, path }) })
+  }
+
+  async getManagedSources(): Promise<ManagedSource[]> {
+    return this.json<ManagedSource[]>('/api/sources/managed')
+  }
+
+  async saveManagedSource(request: { adapter: string; path: string; enabled?: boolean; rememberOnStartup?: boolean }): Promise<ManagedSource> {
+    return this.json<ManagedSource>('/api/sources/managed', { method: 'PUT', body: JSON.stringify(request) })
+  }
+
+  async setManagedSourceEnabled(id: string, enabled: boolean): Promise<void> {
+    await this.json(`/api/sources/managed/${encodeURIComponent(id)}/${enabled ? 'enable' : 'disable'}`, { method: 'POST' })
+  }
+
+  async deleteManagedSource(id: string): Promise<void> {
+    await this.json(`/api/sources/managed/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
+
+  async importFile(file: File, adapter?: string): Promise<SyncStatus> {
     const content = typeof file.text === 'function' ? await file.text() : await new Promise<string>((resolve, reject) => {
       const reader = new FileReader()
       reader.onload = () => resolve(String(reader.result ?? ''))
@@ -514,7 +569,7 @@ export class TokenDashboardClient {
       reader.readAsText(file)
     })
     const selectedAdapter = adapter && adapter !== 'auto' ? adapter : this.adapterFromFileName(file.name)
-    return this.json('/api/sources/import', { method: 'POST', body: JSON.stringify({ adapter: selectedAdapter, fileName: file.name, content }) })
+    return this.json<SyncStatus>('/api/sources/import', { method: 'POST', body: JSON.stringify({ adapter: selectedAdapter, fileName: file.name, content }) })
   }
 
   async addTag(request: TagRequest): Promise<unknown> {

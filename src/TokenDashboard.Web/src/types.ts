@@ -140,6 +140,8 @@ export interface DashboardData {
   comparisons: ComparisonRow[]
   comparisonTree: ComparisonTreeNode[]
   sessions: SessionRecord[]
+  sessionsNextCursor?: string | null
+  sessionsHasMore?: boolean
   capabilities: string[]
   tags: TagRecord[]
   pricing: {

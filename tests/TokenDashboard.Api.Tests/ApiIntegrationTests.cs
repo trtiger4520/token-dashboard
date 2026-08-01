@@ -226,6 +226,37 @@ public sealed class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task SnapshotPaginationTimelineAndManagedSourcesAvoidEagerSessionDetails()
+    {
+        using var factory = new ApiFactory();
+        using var client = factory.CreateAuthenticatedClient();
+        var path = WriteFixture("""
+            [
+              {"source_id":"snapshot-source","session_id":"snapshot-session","turn_id":"snapshot-turn-1","sequence":1,"event_type":"prompt","occurred_at_utc":"2026-07-09T00:00:00Z","source_timezone":"UTC","prompt":"masked prompt","model":"gpt-5.4","input_tokens":3},
+              {"source_id":"snapshot-source","session_id":"snapshot-session","turn_id":"snapshot-turn-1","sequence":1,"event_type":"tool","occurred_at_utc":"2026-07-09T00:00:01Z","source_timezone":"UTC","tool":"rg","payload":"private payload"}
+            ]
+            """);
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", path))).StatusCode);
+
+        var snapshot = await client.GetFromJsonAsync<JsonElement>("/api/dashboard-snapshot?from=2026-07-09&to=2026-07-10&pageSize=50");
+        Assert.Equal(1, snapshot.GetProperty("sessions").GetArrayLength());
+        Assert.True(snapshot.GetProperty("sessions")[0].GetProperty("turnCount").GetInt32() >= 1);
+        Assert.DoesNotContain("turns", snapshot.GetProperty("sessions")[0].EnumerateObject().Select(property => property.Name), StringComparer.OrdinalIgnoreCase);
+
+        var page = await client.GetFromJsonAsync<JsonElement>("/api/sessions/page?from=2026-07-09&to=2026-07-10&pageSize=50");
+        Assert.Equal(1, page.GetProperty("items").GetArrayLength());
+        var timeline = await client.GetFromJsonAsync<JsonElement>("/api/sessions/snapshot-session/timeline?pageSize=100");
+        Assert.Equal(1, timeline.GetProperty("items").GetArrayLength());
+        Assert.True(timeline.GetProperty("items")[0].GetProperty("events")[0].GetProperty("contentMasked").GetBoolean());
+
+        var managed = await client.GetFromJsonAsync<JsonElement>("/api/sources/managed");
+        Assert.Contains(managed.EnumerateArray(), item => item.GetProperty("path").GetString() == Path.GetFullPath(path));
+        var preview = await client.PostAsJsonAsync("/api/sources/preview", new SourcePreviewRequest("auto", path));
+        Assert.Equal(HttpStatusCode.OK, preview.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await client.GetAsync("/api/import-jobs/active")).StatusCode);
+    }
+
+    [Fact]
     public async Task ImportSupportsTimezoneGroupingFtsTagsAndPricingCatalog()
     {
         using var factory = new ApiFactory();

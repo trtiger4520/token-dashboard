@@ -8,6 +8,11 @@ public sealed class SqliteDataStore : IDisposable, IAsyncDisposable
     {
         Connection = new SqliteConnection(connectionString);
         Connection.Open();
+        using (var pragma = Connection.CreateCommand())
+        {
+            pragma.CommandText = "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;";
+            pragma.ExecuteNonQuery();
+        }
         SchemaMigrator.Migrate(Connection);
     }
 

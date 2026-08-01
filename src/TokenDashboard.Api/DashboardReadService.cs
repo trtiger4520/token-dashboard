@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using TokenDashboard.Core;
 using TokenDashboard.Data;
@@ -36,8 +37,16 @@ public sealed class DashboardReadService
             """
             SELECT turn_id, token_type, SUM(token_count) AS token_count
             FROM token_usages
+            WHERE turn_id IN
+            (
+                SELECT DISTINCT turn_id
+                FROM sub_events
+                WHERE occurred_at_utc >= $fromUtc AND occurred_at_utc < $toUtc AND turn_id IS NOT NULL
+            )
             GROUP BY turn_id, token_type;
-            """);
+            """,
+            ("$fromUtc", Utc(range.FromUtc)),
+            ("$toUtc", Utc(range.ToUtc)));
         var byTurn = tokens
             .GroupBy(row => String(row, "turn_id"), StringComparer.Ordinal)
             .ToDictionary(
@@ -265,6 +274,398 @@ public sealed class DashboardReadService
                     costCoverage = coverage.TotalTokens == 0 ? (decimal?)null : (decimal)coverage.PricedTokens / coverage.TotalTokens
                 };
             }).ToArray();
+    }
+
+    public SessionPageDto SessionsPage(DateRange range, DashboardFilter? filter, string? cursor, int pageSize)
+    {
+        pageSize = Math.Clamp(pageSize, 1, 50);
+        var decodedCursor = DecodeCursor(cursor);
+        var rows = data.Query(
+            """
+            SELECT s.session_id, s.source_id, s.started_at_utc, s.last_activity_at_utc,
+                   s.source_timezone, s.workspace_id, s.owner_id,
+                   COALESCE(r.event_count, 0) AS event_count,
+                   COALESCE(r.turn_count, 0) AS turn_count,
+                   COALESCE(r.total_tokens, 0) AS total_tokens,
+                   COALESCE(r.priced_tokens, 0) AS priced_tokens,
+                   COALESCE(r.unpriced_tokens, 0) AS unpriced_tokens
+            FROM sessions AS s
+            LEFT JOIN session_usage_rollups AS r ON r.session_id = s.session_id
+            WHERE s.last_activity_at_utc >= $fromUtc
+              AND s.started_at_utc < $toUtc
+              AND ($sourceId IS NULL OR s.source_id = $sourceId)
+              AND ($workspaceId IS NULL OR s.workspace_id = $workspaceId)
+              AND ($cursorTime IS NULL OR s.last_activity_at_utc < $cursorTime OR (s.last_activity_at_utc = $cursorTime AND s.session_id < $cursorId))
+            ORDER BY s.last_activity_at_utc DESC, s.session_id DESC
+            LIMIT $limit;
+            """,
+            ("$fromUtc", Utc(range.FromUtc)),
+            ("$toUtc", Utc(range.ToUtc)),
+            ("$sourceId", (object?)NullIfEmpty(filter?.SourceId) ?? DBNull.Value),
+            ("$workspaceId", (object?)NullIfEmpty(filter?.WorkspaceId) ?? DBNull.Value),
+            ("$cursorTime", (object?)decodedCursor?.Time ?? DBNull.Value),
+            ("$cursorId", (object?)decodedCursor?.Id ?? DBNull.Value),
+            ("$limit", pageSize + 1));
+
+        var hasMore = rows.Count > pageSize;
+        var selected = rows.Take(pageSize).ToArray();
+        var ids = selected.Select(row => String(row, "session_id")).ToArray();
+        var rollupEvents = LoadRollupEvents(ids);
+        var result = selected.Select(row =>
+        {
+            var id = String(row, "session_id");
+            var events = rollupEvents.TryGetValue(id, out var sessionEvents) ? sessionEvents : [];
+            var tokens = AggregateTokens(events.SelectMany(item => item.Tokens));
+            var coverage = CostCoverage(events);
+            var model = events.Select(item => item.Model).FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
+            var tool = events.Select(item => item.Tool).FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
+            return (object)new
+            {
+                id,
+                sourceId = String(row, "source_id"),
+                startedAtUtc = String(row, "started_at_utc"),
+                lastActivityAtUtc = String(row, "last_activity_at_utc"),
+                endedAtUtc = DateTimeOffset.Parse(String(row, "last_activity_at_utc"), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind).AddMinutes(30),
+                sourceTimeZone = String(row, "source_timezone"),
+                model,
+                tool,
+                workspaceId = NullableString(row, "workspace_id"),
+                ownerId = NullableString(row, "owner_id"),
+                eventCount = Convert.ToInt32(row["event_count"], CultureInfo.InvariantCulture),
+                turnCount = Convert.ToInt32(row["turn_count"], CultureInfo.InvariantCulture),
+                uniqueSessionCount = 1,
+                totalTokens = tokens.Values.Sum(),
+                tokens,
+                tokenTypes = tokens,
+                costUsd = Cost(events),
+                partialCostUsd = PartialCost(events),
+                pricedTokenCount = coverage.PricedTokens,
+                unpricedTokenCount = coverage.UnpricedTokens,
+                costCoverage = coverage.TotalTokens == 0 ? (decimal?)null : (decimal)coverage.PricedTokens / coverage.TotalTokens
+            };
+        }).ToArray();
+
+        var nextCursor = hasMore && selected.Length > 0
+            ? EncodeCursor(String(selected[^1], "last_activity_at_utc"), String(selected[^1], "session_id"))
+            : null;
+        return new SessionPageDto(result, nextCursor, hasMore);
+    }
+
+    public DashboardSnapshotDto Snapshot(DateRange range, DashboardFilter? filter, string? cursor, int pageSize)
+    {
+        var page = SessionsPage(range, filter, cursor, pageSize);
+        var events = StatisticalEvents(range, filter);
+        return new DashboardSnapshotDto(
+            OverviewFromEvents(events, range),
+            TrendFromEvents(events, range, TimeSpan.FromDays(1)),
+            GroupByDate(events, range.TimeZoneId, static date => date.ToString("yyyy-MM", CultureInfo.InvariantCulture)),
+            GroupByDate(events, range.TimeZoneId, static date => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)),
+            ComparisonTreeFromEvents(events),
+            page.Items,
+            page.NextCursor,
+            page.HasMore,
+            DateTimeOffset.UtcNow);
+    }
+
+    private object OverviewFromEvents(EventRow[] events, DateRange range)
+    {
+        var tokens = AggregateTokens(events.SelectMany(item => item.Tokens));
+        var coverage = CostCoverage(events);
+        var sessions = events.Select(item => item.SessionId).Where(static value => value is not null).Distinct(StringComparer.Ordinal).Count();
+        return new
+        {
+            range.FromUtc,
+            range.ToUtc,
+            range.TimeZoneId,
+            eventCount = events.Length,
+            sessionCount = sessions,
+            uniqueSessionCount = sessions,
+            turnCount = events.Select(item => item.TurnId).Where(static value => value is not null).Distinct(StringComparer.Ordinal).Count(),
+            coverage = CoverageMetadata(events, range),
+            totalTokens = tokens.Values.Sum(),
+            tokens,
+            tokenTypes = tokens,
+            inputTokens = events.Sum(item => item.InputTokens),
+            cachedInputTokens = events.Sum(item => item.CachedInputTokens),
+            outputTokens = events.Sum(item => item.OutputTokens),
+            cacheHitRate = CacheRate(events),
+            cacheReportedEventCount = events.Count(static item => item.CacheReported),
+            cacheUnreportedEventCount = events.Count(static item => !item.CacheReported),
+            cacheCoverage = events.Length == 0 ? (decimal?)null : (decimal)events.Count(static item => item.CacheReported) / events.Length,
+            costUsd = Cost(events),
+            partialCostUsd = PartialCost(events),
+            pricedTokenCount = coverage.PricedTokens,
+            unpricedTokenCount = coverage.UnpricedTokens,
+            costCoverage = coverage.TotalTokens == 0 ? (decimal?)null : (decimal)coverage.PricedTokens / coverage.TotalTokens,
+            unpriced = events.Any(item => Cost(item) is null && item.Tokens.Values.Any(static value => value > 0)),
+            unpricedCount = events.Count(item => Cost(item) is null && item.Tokens.Values.Any(static value => value > 0))
+        };
+    }
+
+    private List<object> TrendFromEvents(EventRow[] events, DateRange range, TimeSpan duration)
+    {
+        var zone = DateRangeResolver.FindTimeZone(range.TimeZoneId);
+        var localFrom = TimeZoneInfo.ConvertTime(range.FromUtc, zone).DateTime.Date;
+        var localTo = TimeZoneInfo.ConvertTime(range.ToUtc, zone).DateTime;
+        var result = new List<object>();
+        for (var start = localFrom; start < localTo; start = start.Add(duration))
+        {
+            var end = start.Add(duration);
+            if (end > localTo) end = localTo;
+            var startUtc = LocalToUtc(start, zone);
+            var endUtc = LocalToUtc(end, zone);
+            var bucket = events.Where(item => item.OccurredAtUtc >= startUtc && item.OccurredAtUtc < endUtc).ToArray();
+            var summary = BuildSummary("bucket", start.ToString("O", CultureInfo.InvariantCulture), bucket);
+            summary["bucketStartUtc"] = startUtc;
+            summary["bucketEndUtc"] = endUtc;
+            result.Add(summary);
+        }
+
+        return result;
+    }
+
+    private object[] ComparisonTreeFromEvents(EventRow[] events)
+    {
+        return events
+            .GroupBy(item => string.IsNullOrWhiteSpace(item.Model) ? "模型未提供" : item.Model, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(group => group.Sum(item => item.TotalTokens))
+            .Select(group =>
+            {
+                var children = group
+                    .GroupBy(item => string.IsNullOrWhiteSpace(item.Tool) ? "非工具" : item.Tool, StringComparer.OrdinalIgnoreCase)
+                    .OrderByDescending(child => child.Sum(item => item.TotalTokens))
+                    .Select(child => ComparisonNode("tool", child.Key, child))
+                    .ToArray();
+                return (object)ComparisonNode("model", group.Key, group, children);
+            })
+            .ToArray();
+    }
+
+    public object? SessionTimeline(string id, string? cursor, int pageSize, bool revealContent)
+    {
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        if (data.Query("SELECT session_id FROM sessions WHERE session_id = $id;", ("$id", id)).SingleOrDefault() is null)
+        {
+            return null;
+        }
+
+        var decodedCursor = DecodeCursor(cursor);
+        var turns = data.Query(
+            """
+            SELECT turn_id, sequence, occurred_at_utc, effort
+            FROM turns
+            WHERE session_id = $sessionId
+              AND ($cursorTime IS NULL OR occurred_at_utc > $cursorTime OR (occurred_at_utc = $cursorTime AND turn_id > $cursorId))
+            ORDER BY occurred_at_utc, turn_id
+            LIMIT $limit;
+            """,
+            ("$sessionId", id),
+            ("$cursorTime", (object?)decodedCursor?.Time ?? DBNull.Value),
+            ("$cursorId", (object?)decodedCursor?.Id ?? DBNull.Value),
+            ("$limit", pageSize + 1));
+        var hasMore = turns.Count > pageSize;
+        var selected = turns.Take(pageSize).ToArray();
+        var turnIds = selected.Select(row => String(row, "turn_id")).ToArray();
+        var events = LoadTimelineEvents(id, turnIds, revealContent);
+        var tokens = LoadTimelineTokens(turnIds);
+        var result = selected.Select(turn =>
+        {
+            var turnId = String(turn, "turn_id");
+            var turnEvents = events.TryGetValue(turnId, out var listed) ? listed : [];
+            var turnTokens = tokens.TryGetValue(turnId, out var counts) ? counts : new Dictionary<string, long>(StringComparer.Ordinal);
+            var accounting = turnEvents.Select(item => ToEventRow(item, turnTokens)).ToArray();
+            var coverage = CostCoverage(accounting);
+            return new
+            {
+                id = turnId,
+                sequence = Convert.ToInt32(turn["sequence"], CultureInfo.InvariantCulture),
+                occurredAtUtc = String(turn, "occurred_at_utc"),
+                effort = NullableString(turn, "effort"),
+                events = turnEvents,
+                tokenUsage = turnTokens.Select(pair => new { tokenType = pair.Key, tokenCount = pair.Value }).ToArray(),
+                tokens = turnTokens,
+                costUsd = Cost(accounting),
+                partialCostUsd = PartialCost(accounting),
+                pricedTokenCount = coverage.PricedTokens,
+                unpricedTokenCount = coverage.UnpricedTokens
+            };
+        }).ToArray();
+        var nextCursor = hasMore && selected.Length > 0
+            ? EncodeCursor(String(selected[^1], "occurred_at_utc"), String(selected[^1], "turn_id"))
+            : null;
+        return new { sessionId = id, items = result, nextCursor, hasMore };
+    }
+
+    private Dictionary<string, List<EventRow>> LoadRollupEvents(string[] sessionIds)
+    {
+        var result = sessionIds.ToDictionary(id => id, _ => new List<EventRow>(), StringComparer.Ordinal);
+        if (sessionIds.Length == 0)
+        {
+            return result;
+        }
+
+        var parameters = sessionIds.Select((id, index) => ($"$session{index}", (object)id)).ToArray();
+        var placeholders = string.Join(", ", parameters.Select(item => item.Item1));
+        var facts = data.Query($"""
+            SELECT f.turn_id, f.session_id, f.occurred_at_utc, f.source_id, f.model, f.tool,
+                   s.adapter_kind, s.source_timezone, sess.workspace_id
+            FROM turn_usage_facts AS f
+            INNER JOIN sources AS s ON s.source_id = f.source_id
+            INNER JOIN sessions AS sess ON sess.session_id = f.session_id
+            WHERE f.session_id IN ({placeholders})
+            ORDER BY f.occurred_at_utc, f.turn_id;
+            """, parameters);
+        var turnIds = facts.Select(row => String(row, "turn_id")).Distinct(StringComparer.Ordinal).ToArray();
+        var tokens = LoadTimelineTokens(turnIds);
+        foreach (var fact in facts)
+        {
+            var turnId = String(fact, "turn_id");
+            var sessionId = String(fact, "session_id");
+            var tokenMap = tokens.TryGetValue(turnId, out var counts) ? counts : new Dictionary<string, long>(StringComparer.Ordinal);
+            result[sessionId].Add(new EventRow(
+                String(fact, "turn_id"),
+                String(fact, "source_id"),
+                String(fact, "adapter_kind"),
+                sessionId,
+                turnId,
+                DateTimeOffset.Parse(String(fact, "occurred_at_utc"), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+                String(fact, "source_timezone"),
+                "turn",
+                string.Empty,
+                string.Empty,
+                String(fact, "model"),
+                String(fact, "tool"),
+                string.Empty,
+                string.Empty,
+                string.Empty,
+                tokenMap,
+                null,
+                null,
+                NullableString(fact, "workspace_id")));
+        }
+
+        return result;
+    }
+
+    private Dictionary<string, List<Dictionary<string, object?>>> LoadTimelineEvents(string sessionId, string[] turnIds, bool revealContent)
+    {
+        var result = turnIds.ToDictionary(id => id, _ => new List<Dictionary<string, object?>>(), StringComparer.Ordinal);
+        if (turnIds.Length == 0)
+        {
+            return result;
+        }
+
+        var parameters = new List<(string Name, object Value)> { ("$sessionId", sessionId) };
+        var placeholders = string.Join(", ", turnIds.Select((id, index) =>
+        {
+            var name = $"$turn{index}";
+            parameters.Add((name, id));
+            return name;
+        }));
+        var rows = data.Query($"""
+            SELECT se.event_fingerprint, se.turn_id, se.event_type, se.occurred_at_utc,
+                   se.model, se.tool, se.prompt, se.response, se.payload,
+                   se.source_timezone, se.source_id, s.adapter_kind, sess.workspace_id
+            FROM sub_events AS se
+            INNER JOIN sources AS s ON s.source_id = se.source_id
+            LEFT JOIN sessions AS sess ON sess.session_id = se.session_id
+            WHERE se.session_id = $sessionId AND se.turn_id IN ({placeholders})
+            ORDER BY se.occurred_at_utc, se.event_fingerprint;
+            """, parameters.ToArray());
+        foreach (var row in rows)
+        {
+            var fingerprint = String(row, "event_fingerprint");
+            var prompt = String(row, "prompt");
+            var response = String(row, "response");
+            var payload = String(row, "payload");
+            var item = new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["event_fingerprint"] = fingerprint,
+                ["event_type"] = String(row, "event_type"),
+                ["occurred_at_utc"] = String(row, "occurred_at_utc"),
+                ["source_id"] = String(row, "source_id"),
+                ["adapter_kind"] = String(row, "adapter_kind"),
+                ["source_timezone"] = String(row, "source_timezone"),
+                ["workspace_id"] = NullableString(row, "workspace_id"),
+                ["model"] = String(row, "model"),
+                ["tool"] = String(row, "tool"),
+                ["prompt"] = revealContent ? prompt : MaskContent(prompt),
+                ["response"] = revealContent ? response : MaskContent(response),
+                ["payload"] = revealContent ? payload : MaskContent(payload),
+                ["contentMasked"] = !revealContent
+            };
+            result[String(row, "turn_id")].Add(item);
+        }
+
+        return result;
+    }
+
+    private Dictionary<string, Dictionary<string, long>> LoadTimelineTokens(string[] turnIds)
+    {
+        var result = turnIds.ToDictionary(id => id, _ => new Dictionary<string, long>(StringComparer.Ordinal), StringComparer.Ordinal);
+        if (turnIds.Length == 0)
+        {
+            return result;
+        }
+
+        var parameters = turnIds.Select((id, index) => ($"$turn{index}", (object)id)).ToArray();
+        var placeholders = string.Join(", ", parameters.Select(item => item.Item1));
+        foreach (var row in data.Query($"SELECT turn_id, token_type, SUM(token_count) AS token_count FROM token_usages WHERE turn_id IN ({placeholders}) GROUP BY turn_id, token_type;", parameters))
+        {
+            result[String(row, "turn_id")][TokenTypeNormalizer.Normalize(String(row, "token_type"))] = Long(row, "token_count");
+        }
+
+        return result;
+    }
+
+    private static EventRow ToEventRow(Dictionary<string, object?> row, IReadOnlyDictionary<string, long> tokens)
+    {
+        return new EventRow(
+            String(row, "event_fingerprint"),
+            String(row, "source_id"),
+            String(row, "adapter_kind"),
+            null,
+            null,
+            DateTimeOffset.Parse(String(row, "occurred_at_utc"), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+            String(row, "source_timezone"),
+            String(row, "event_type"),
+            String(row, "prompt"),
+            String(row, "response"),
+            String(row, "model"),
+            String(row, "tool"),
+            string.Empty,
+            string.Empty,
+            String(row, "payload"),
+            tokens,
+            null,
+            null,
+            NullableString(row, "workspace_id"));
+    }
+
+    private static string? NullIfEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
+
+    private static string EncodeCursor(string time, string id)
+        => Convert.ToBase64String(Encoding.UTF8.GetBytes($"{time}\n{id}"))
+            .Replace('+', '-').Replace('/', '_').TrimEnd('=');
+
+    private static (string Time, string Id)? DecodeCursor(string? cursor)
+    {
+        if (string.IsNullOrWhiteSpace(cursor))
+        {
+            return null;
+        }
+
+        try
+        {
+            var padded = cursor.Replace('-', '+').Replace('_', '/');
+            padded = padded.PadRight(padded.Length + ((4 - padded.Length % 4) % 4), '=');
+            var value = Encoding.UTF8.GetString(Convert.FromBase64String(padded)).Split('\n', 2);
+            return value.Length == 2 && value[0].Length > 0 && value[1].Length > 0 ? (value[0], value[1]) : null;
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
     }
 
     public object? Session(string id, bool revealContent = false)
