@@ -299,23 +299,25 @@ public sealed class ApiIntegrationTests
         var path = WriteFixture("""{"source_id":"export-source","session_id":"export-session","turn_id":"export-turn","occurred_at_utc":"2026-07-02T00:00:00Z","source_timezone":"UTC","prompt":"private prompt","response":"private response","model":"unknown-model","input_tokens":1,"output_tokens":1}""");
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", path))).StatusCode);
 
-        var csv = await client.PostAsJsonAsync("/api/export", new ExportRequest("csv"));
+        const string from = "2026-07-02";
+        const string to = "2026-07-03";
+        var csv = await client.PostAsJsonAsync("/api/export", new ExportRequest("csv", From: from, To: to));
         var csvBody = await csv.Content.ReadAsStringAsync();
         Assert.DoesNotContain("private prompt", csvBody);
 
-        var json = await client.PostAsJsonAsync("/api/export", new ExportRequest("json"));
+        var json = await client.PostAsJsonAsync("/api/export", new ExportRequest("json", From: from, To: to));
         var jsonBody = await json.Content.ReadAsStringAsync();
         Assert.DoesNotContain("private prompt", jsonBody);
         Assert.DoesNotContain("sensitive", jsonBody);
         Assert.False(json.Headers.Contains("X-Token-Dashboard-Export-Warning"));
 
-        var jsonWithContent = await client.PostAsJsonAsync("/api/export", new ExportRequest("json", IncludeContent: true, ConfirmIncludeContent: true));
+        var jsonWithContent = await client.PostAsJsonAsync("/api/export", new ExportRequest("json", IncludeContent: true, ConfirmIncludeContent: true, From: from, To: to));
         var jsonWithContentBody = await jsonWithContent.Content.ReadAsStringAsync();
         Assert.Contains("private prompt", jsonWithContentBody);
         Assert.Contains("sensitive", jsonWithContentBody);
         Assert.True(jsonWithContent.Headers.Contains("X-Token-Dashboard-Export-Warning"));
 
-        var sqlite = await client.PostAsJsonAsync("/api/export", new ExportRequest("sqlite"));
+        var sqlite = await client.PostAsJsonAsync("/api/export", new ExportRequest("sqlite", From: from, To: to));
         Assert.True(sqlite.Headers.Contains("X-Token-Dashboard-Export-Warning"));
         Assert.Equal("SQLite format 3", Encoding.UTF8.GetString((await sqlite.Content.ReadAsByteArrayAsync())[0..15]));
 

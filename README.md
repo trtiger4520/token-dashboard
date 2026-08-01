@@ -72,7 +72,11 @@ GitHub repository 建議設定：
 
 ## 資料與啟動安全
 
-預設 SQLite 檔案是目前工作目錄的 `token-dashboard.db`，可用 `TokenDashboard__ConnectionString` 指定資料路徑
+預設 SQLite 檔案位於使用者資料目錄，可用 `TokenDashboard__ConnectionString` 指定資料路徑
+
+- Windows：`%LOCALAPPDATA%\TokenDashboard\data\token-dashboard.db`
+- macOS：`~/Library/Application Support/TokenDashboard/data/token-dashboard.db`
+- Linux：`${XDG_DATA_HOME:-$HOME/.local/share}/token-dashboard/data/token-dashboard.db`
 
 服務只綁定 loopback 動態連接埠，啟動時產生至少 256-bit 的 session key，瀏覽器 URL 只用 fragment 傳遞 key，SPA 讀取後會移除 fragment 並放入 sessionStorage，敏感 API 使用 `X-Token-Dashboard-Key` header
 
