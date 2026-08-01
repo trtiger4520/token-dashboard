@@ -346,9 +346,13 @@ internal static class SourceFileParser
         {
             return new ParseResult([], [new ParseError(0, "Source path permission was denied")], AdapterCapabilityStatus.PermissionDenied);
         }
-        catch (IOException)
+        catch (IOException exception) when (IsFileLocked(exception))
         {
             return new ParseResult([], [new ParseError(0, "Source file is currently in use. Retry after the writer releases it")], AdapterCapabilityStatus.ParseFallback);
+        }
+        catch (IOException exception)
+        {
+            return new ParseResult([], [new ParseError(0, exception.Message)], AdapterCapabilityStatus.ParseFallback);
         }
     }
 
@@ -361,11 +365,18 @@ internal static class SourceFileParser
             {
                 return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             }
-            catch (IOException) when (attempt < maxAttempts)
+            catch (IOException exception) when (attempt < maxAttempts && IsFileLocked(exception))
             {
                 Thread.Sleep(50);
             }
         }
+    }
+
+    private static bool IsFileLocked(IOException exception)
+    {
+        const int sharingViolation = unchecked((int)0x80070020);
+        const int lockViolation = unchecked((int)0x80070021);
+        return OperatingSystem.IsWindows() && exception.HResult is sharingViolation or lockViolation;
     }
 
     private static ParseResult ParseJson(string text, SourceAdapterKind adapterKind, CancellationToken cancellationToken)
