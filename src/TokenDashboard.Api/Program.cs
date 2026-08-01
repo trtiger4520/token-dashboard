@@ -456,11 +456,6 @@ public static class ProgramEntry
 
     private static IResult ImportSource(SourceImportRequest request, SourceAdapterRegistry registry, DashboardDataService data, SourceManagementService sources, SyncJobService jobs, long maxImportBytes)
     {
-        if (!jobs.TryAcquireInline())
-        {
-            return Results.Conflict(new { error = "A data job is already running" });
-        }
-
         try
         {
             var adapter = registry.Get(request.Adapter);
@@ -480,13 +475,6 @@ public static class ProgramEntry
                 try
                 {
                     File.WriteAllText(temporaryPath, request.Content, Encoding.UTF8);
-                    if (Encoding.UTF8.GetByteCount(request.Content) <= 8L * 1024 * 1024)
-                    {
-                        var inlineSummary = data.Import(Guid.NewGuid().ToString("N"), temporaryPath, adapter, request.WorkspaceId, request.OwnerId);
-                        File.Delete(temporaryPath);
-                        return Results.Ok(inlineSummary);
-                    }
-
                     if (!jobs.TryEnqueue(new SyncRequest(request.Adapter, [temporaryPath], request.WorkspaceId, request.OwnerId, CleanupPathsAfterCompletion: true), out var syncId, out var active))
                     {
                         File.Delete(temporaryPath);
@@ -506,27 +494,35 @@ public static class ProgramEntry
                 }
             }
 
-            if (string.IsNullOrWhiteSpace(request.Path) || !TryGetImportExtension(request.Path, out _))
+            if (!jobs.TryAcquireInline())
             {
-                return Results.BadRequest(new { error = "path must use .json, .jsonl, .ndjson or .csv" });
+                return Results.Conflict(new { error = "A data job is already running" });
             }
 
-            if (!File.Exists(request.Path))
+            try
             {
-                return Results.NotFound(new { error = "Source file was not found" });
-            }
+                if (string.IsNullOrWhiteSpace(request.Path) || !TryGetImportExtension(request.Path, out _))
+                {
+                    return Results.BadRequest(new { error = "path must use .json, .jsonl, .ndjson or .csv" });
+                }
 
-            var summary = data.Import(Guid.NewGuid().ToString("N"), request.Path, adapter, request.WorkspaceId, request.OwnerId);
-            sources.MarkSuccess(request.Adapter, request.Path);
-            return Results.Ok(summary);
+                if (!File.Exists(request.Path))
+                {
+                    return Results.NotFound(new { error = "Source file was not found" });
+                }
+
+                var summary = data.Import(Guid.NewGuid().ToString("N"), request.Path, adapter, request.WorkspaceId, request.OwnerId);
+                sources.MarkSuccess(request.Adapter, request.Path);
+                return Results.Ok(summary);
+            }
+            finally
+            {
+                jobs.ReleaseInline();
+            }
         }
         catch (ArgumentException exception)
         {
             return Results.BadRequest(new { error = exception.Message });
-        }
-        finally
-        {
-            jobs.ReleaseInline();
         }
     }
 

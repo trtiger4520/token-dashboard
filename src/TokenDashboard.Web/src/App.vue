@@ -39,6 +39,9 @@ const searchResults = ref<Array<SearchResult & { title: string }>>([])
 const searchError = ref('')
 const sourcePath = ref('')
 const sourceAdapter = ref('auto')
+watch([sourcePath, sourceAdapter], () => {
+  previewResult.value = null
+})
 const discoveredSources = ref<SourceDiscoveryResult[]>([])
 const tagInput = ref('')
 const tagValue = ref('')

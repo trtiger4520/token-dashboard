@@ -18,7 +18,7 @@ function dashboardFetch(input: RequestInfo | URL, init?: RequestInit): Response 
   if (url.endsWith('/api/tags') && init?.method === 'POST') return jsonResponse({ id: 'tag-1' })
   if (url.includes('/api/tags/session/s1/review') && init?.method === 'DELETE') return new Response(null, { status: 204 })
   if (url.includes('/api/tags?')) return jsonResponse([{ id: 'tag-1', key: 'review', value: 'keep', scope: 'session', entityId: 's1' }])
-  if (url.endsWith('/api/sources/import') && init?.method === 'POST') return jsonResponse({ status: 'completed' })
+  if (url.endsWith('/api/sources/import') && init?.method === 'POST') return jsonResponse({ syncId: 'import-1', status: 'queued' }, 202)
   if (url.endsWith('/api/import-jobs/active')) return new Response(null, { status: 204 })
   if (url.includes('/api/dashboard-snapshot')) return jsonResponse({
     overview: { fromUtc: '2026-07-01T00:00:00Z', toUtc: '2026-07-08T00:00:00Z', timeZoneId: 'Asia/Taipei', eventCount: 1, sessionCount: 9, inputTokens: 3, cachedInputTokens: 2, outputTokens: 4, reasoningTokens: 5, fastTokens: 6, tokens: { input: 3, 'cached-input': 2, output: 4, reasoning: 5, fast: 6 }, cacheHitRate: 0.4, costUsd: null, partialCostUsd: 0.02, costCoverage: 0.6, unpriced: true, unpricedCount: 7 },
@@ -163,8 +163,9 @@ describe('formal API client contract', () => {
   it('reads import content, posts adapter payload, and exports with warning headers', async () => {
     const client = new TokenDashboardClient()
     const file = new File(['{"event":"tool"}'], 'codex-log.json', { type: 'application/json' })
-    await client.importFile(file, 'codex-cli')
+    const queued = await client.importFile(file, 'codex-cli')
     const importCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/api/sources/import'))
+    expect(queued).toMatchObject({ syncId: 'import-1', status: 'queued' })
     expect(JSON.parse(String(importCall?.[1]?.body))).toEqual({ adapter: 'codex-cli', fileName: 'codex-log.json', content: '{"event":"tool"}' })
 
     fetchMock.mockImplementationOnce(async () => new Response('sqlite', { headers: { 'X-Token-Dashboard-Export-Warning': 'contains content' } }))
@@ -294,6 +295,27 @@ describe('dashboard API states and interaction surface', () => {
     expect(wrapper.get('#control-rail').classes('rail-open')).toBe(true)
     await toggle.trigger('click')
     expect(toggle.attributes('aria-expanded')).toBe('false')
+  })
+
+  it('clears a source preview when its path or adapter changes', async () => {
+    window.history.replaceState({}, document.title, '/settings')
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/api/sources/preview') && init?.method === 'POST') {
+        return jsonResponse({ suggestedAdapter: 'CodexCli', sampledFileCount: 1, sampledBytes: 10 })
+      }
+
+      return dashboardFetch(input, init)
+    })
+    const wrapper = mount(App)
+    await flushPromises()
+    const sourcePath = wrapper.get('.settings-route .field-wide input')
+    await sourcePath.setValue('C:\\logs\\first')
+    await wrapper.findAll('button').find((button) => button.text() === '預覽來源')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.preview-summary').exists()).toBe(true)
+
+    await sourcePath.setValue('C:\\logs\\second')
+    expect(wrapper.find('.preview-summary').exists()).toBe(false)
   })
 
   it('uses native modal lifecycle for destructive and sensitive-content confirmations', async () => {

@@ -444,8 +444,7 @@ public sealed class ApiIntegrationTests
         using var factory = new ApiFactory();
         using var client = factory.CreateAuthenticatedClient();
         var content = "{\"source_id\":\"cache-source\",\"session_id\":\"cache-session\",\"turn_id\":\"cache-turn\",\"occurred_at_utc\":\"2026-07-05T00:00:00Z\",\"source_timezone\":\"UTC\",\"model\":\"gpt-5.4\",\"input_tokens\":75,\"cache_read_tokens\":25}";
-        var response = await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", null, "cache.json", content));
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await ImportContentAndWait(client, new SourceImportRequest("codex-cli", null, "cache.json", content));
         var overview = await client.GetFromJsonAsync<JsonElement>("/api/overview?from=2026-07-05&to=2026-07-06");
         Assert.Equal(0.25m, overview.GetProperty("cacheHitRate").GetDecimal());
         Assert.Equal(25, overview.GetProperty("cachedInputTokens").GetInt64());
@@ -463,8 +462,7 @@ public sealed class ApiIntegrationTests
             {"timestamp":"2026-07-26T02:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300000,"output_tokens":100,"reasoning_output_tokens":20,"total_tokens":300100}}}}
             """;
 
-        var response = await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", null, "suggest.jsonl", content));
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await ImportContentAndWait(client, new SourceImportRequest("codex-cli", null, "suggest.jsonl", content));
 
         var unknown = await client.GetFromJsonAsync<JsonElement>("/api/pricing/unknown?from=2026-07-26&to=2026-07-27");
         var reasoning = unknown.EnumerateArray().Single(item => item.GetProperty("tokenType").GetString() == "reasoning");
@@ -513,21 +511,20 @@ public sealed class ApiIntegrationTests
             {"timestamp":"2026-07-31T00:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100}}}}
             """;
 
-        var response = await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", null, "fast.jsonl", content));
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await ImportContentAndWait(client, new SourceImportRequest("codex-cli", null, "fast.jsonl", content));
 
         var overview = await client.GetFromJsonAsync<JsonElement>("/api/overview?from=2026-07-31&to=2026-08-01");
         Assert.Equal(0.0004m, overview.GetProperty("costUsd").GetDecimal());
     }
 
     [Fact]
-    public async Task ContentImportDeletesTemporaryFileAndValidatesExtension()
+    public async Task ContentImportQueuesWorkAndDeletesTemporaryFileAfterCompletion()
     {
         using var factory = new ApiFactory();
         using var client = factory.CreateAuthenticatedClient();
         var content = "{\"source_id\":\"inline-source\",\"session_id\":\"inline-session\",\"turn_id\":\"inline-turn\",\"occurred_at_utc\":\"2026-07-06T00:00:00Z\",\"source_timezone\":\"UTC\",\"prompt\":\"inline prompt\"}";
-        var response = await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", null, "inline.json", content));
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var completed = await ImportContentAndWait(client, new SourceImportRequest("codex-cli", null, "inline.json", content));
+        Assert.Equal("completed", completed.GetProperty("status").GetString());
         Assert.Empty(Directory.GetFiles(Path.GetTempPath(), "token-dashboard-import-*.json"));
 
         var invalid = await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", null, "inline.exe", content));
@@ -541,9 +538,9 @@ public sealed class ApiIntegrationTests
         using var client = factory.CreateAuthenticatedClient();
         const string content = "{\"source_id\":\"unlimited-source\",\"session_id\":\"unlimited-session\",\"turn_id\":\"unlimited-turn\",\"occurred_at_utc\":\"2026-07-06T00:00:00Z\",\"source_timezone\":\"UTC\",\"prompt\":\"unlimited inline prompt\"}";
 
-        var response = await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", null, "unlimited.json", content));
+        var completed = await ImportContentAndWait(client, new SourceImportRequest("codex-cli", null, "unlimited.json", content));
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("completed", completed.GetProperty("status").GetString());
     }
 
     [Fact]
@@ -653,7 +650,7 @@ public sealed class ApiIntegrationTests
         using var client = factory.CreateAuthenticatedClient();
         const string sentinel = "raw-only-sentinel-7f2a";
         var content = "{\"source_id\":\"raw-source\",\"session_id\":\"raw-session\",\"turn_id\":\"raw-turn\",\"occurred_at_utc\":\"2026-07-12T00:00:00Z\",\"source_timezone\":\"UTC\",\"prompt\":\"kept prompt\",\"" + sentinel + "\":\"must not persist\",\"input_tokens\":1}";
-        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/api/sources/import", new SourceImportRequest("codex-cli", null, "raw.json", content))).StatusCode);
+        await ImportContentAndWait(client, new SourceImportRequest("codex-cli", null, "raw.json", content));
         var storePayload = factory.Services.GetRequiredService<DashboardDataService>().Query("SELECT payload FROM sub_events WHERE source_id = 'raw-source';").Single()["payload"]?.ToString();
         Assert.DoesNotContain(sentinel, storePayload);
         var json = await client.PostAsJsonAsync("/api/export", new ExportRequest("json"));
@@ -798,6 +795,14 @@ public sealed class ApiIntegrationTests
         }
 
         throw new TimeoutException("Sync did not complete deterministically");
+    }
+
+    private static async Task<JsonElement> ImportContentAndWait(HttpClient client, SourceImportRequest request)
+    {
+        var response = await client.PostAsJsonAsync("/api/sources/import", request);
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        var queued = await response.Content.ReadFromJsonAsync<JsonElement>();
+        return await WaitForSync(client, queued.GetProperty("syncId").GetGuid());
     }
 }
 
