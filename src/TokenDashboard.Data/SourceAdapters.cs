@@ -324,13 +324,13 @@ internal static class SourceFileParser
             var extension = Path.GetExtension(path).ToLowerInvariant();
             if (extension is ".json" or ".jsonl" or ".ndjson")
             {
-                using var stream = File.OpenRead(path);
+                using var stream = OpenReadShared(path);
                 return extension == ".json"
                     ? ParseJson(stream, adapterKind, cancellationToken)
                     : ParseJsonLines(stream, adapterKind, cancellationToken);
             }
 
-            using var reader = new StreamReader(File.OpenRead(path));
+            using var reader = new StreamReader(OpenReadShared(path));
             var text = reader.ReadToEnd();
             return extension == ".csv" ? ParseCsv(text, adapterKind, cancellationToken) : ParseFallback(text, adapterKind, cancellationToken);
         }
@@ -346,6 +346,37 @@ internal static class SourceFileParser
         {
             return new ParseResult([], [new ParseError(0, "Source path permission was denied")], AdapterCapabilityStatus.PermissionDenied);
         }
+        catch (IOException exception) when (IsFileLocked(exception))
+        {
+            return new ParseResult([], [new ParseError(0, "Source file is currently in use. Retry after the writer releases it")], AdapterCapabilityStatus.ParseFallback);
+        }
+        catch (IOException exception)
+        {
+            return new ParseResult([], [new ParseError(0, exception.Message)], AdapterCapabilityStatus.ParseFallback);
+        }
+    }
+
+    private static FileStream OpenReadShared(string path)
+    {
+        const int maxAttempts = 3;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            }
+            catch (IOException exception) when (attempt < maxAttempts && IsFileLocked(exception))
+            {
+                Thread.Sleep(50);
+            }
+        }
+    }
+
+    private static bool IsFileLocked(IOException exception)
+    {
+        const int sharingViolation = unchecked((int)0x80070020);
+        const int lockViolation = unchecked((int)0x80070021);
+        return OperatingSystem.IsWindows() && exception.HResult is sharingViolation or lockViolation;
     }
 
     private static ParseResult ParseJson(string text, SourceAdapterKind adapterKind, CancellationToken cancellationToken)
