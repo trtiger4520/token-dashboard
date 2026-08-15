@@ -19,13 +19,27 @@
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
-/* 與 Inter 對齊行高與字寬的替代面，讓 swap 期間與載入失敗時都不產生版面位移 */
+/* 與 Inter 對齊行高與字寬的替代面，讓 swap 期間與載入失敗時都不產生版面位移
+   必須宣告粗體面：:root 設了 font-synthesis: none，單一 400 面會讓 600 的標題整片失去粗細
+   size-adjust 與 override 是對實際出貨的 Inter 4 檔案量測求解，非沿用通用值
+   Liberation Sans 與 Arial 度量相容，因此共用同一組數值 */
 @font-face {
   font-family: "Inter Fallback";
+  font-weight: 100 500;
   src: local("Arial"), local("Helvetica Neue"), local("Liberation Sans");
-  size-adjust: 107.12%;
-  ascent-override: 90.2%;
-  descent-override: 22.48%;
+  size-adjust: 97.96%;
+  ascent-override: 99.14%;
+  descent-override: 24.71%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Inter Fallback";
+  font-weight: 600 900;
+  src: local("Arial Bold"), local("Helvetica Neue Bold"), local("Liberation Sans Bold");
+  size-adjust: 96.79%;
+  ascent-override: 99.14%;
+  descent-override: 24.71%;
   line-gap-override: 0%;
 }
 
