@@ -13,13 +13,21 @@ internal static class ProviderLogParser
         SourceAdapterKind adapterKind,
         CancellationToken cancellationToken)
     {
+        return ParseJsonLines(Lines(text), adapterKind, cancellationToken);
+    }
+
+    public static ProviderParseAttempt ParseJsonLines(
+        IEnumerable<string> lines,
+        SourceAdapterKind adapterKind,
+        CancellationToken cancellationToken)
+    {
         return adapterKind is SourceAdapterKind.ClaudeCodeApp or SourceAdapterKind.ClaudeCodeCli
-            ? ParseClaude(text, adapterKind, cancellationToken)
-            : ParseCodex(text, adapterKind, cancellationToken);
+            ? ParseClaude(lines, adapterKind, cancellationToken)
+            : ParseCodex(lines, adapterKind, cancellationToken);
     }
 
     private static ProviderParseAttempt ParseClaude(
-        string text,
+        IEnumerable<string> lines,
         SourceAdapterKind adapterKind,
         CancellationToken cancellationToken)
     {
@@ -28,7 +36,7 @@ internal static class ProviderLogParser
         var recognized = false;
         var lineNumber = 0;
 
-        foreach (var line in Lines(text))
+        foreach (var line in lines)
         {
             lineNumber++;
             cancellationToken.ThrowIfCancellationRequested();
@@ -132,11 +140,11 @@ internal static class ProviderLogParser
     }
 
     private static ProviderParseAttempt ParseCodex(
-        string text,
+        IEnumerable<string> textLines,
         SourceAdapterKind adapterKind,
         CancellationToken cancellationToken)
     {
-        var lines = ReadJsonLines(text, cancellationToken, out var errors);
+        var lines = ReadJsonLines(textLines, cancellationToken, out var errors);
         var recognized = lines.Any(static item =>
             GetString(item.Element, "type") is "session_meta" or "turn_context" or "response_item" or "event_msg");
         if (!recognized)
@@ -469,14 +477,14 @@ internal static class ProviderLogParser
     }
 
     private static List<JsonLine> ReadJsonLines(
-        string text,
+        IEnumerable<string> lines,
         CancellationToken cancellationToken,
         out List<ParseError> errors)
     {
         var rows = new List<JsonLine>();
         errors = [];
         var lineNumber = 0;
-        foreach (var line in Lines(text))
+        foreach (var line in lines)
         {
             lineNumber++;
             cancellationToken.ThrowIfCancellationRequested();

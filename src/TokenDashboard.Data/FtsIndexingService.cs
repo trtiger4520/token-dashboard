@@ -24,20 +24,34 @@ public sealed record SearchResult(
 
 public sealed class FtsIndexingService
 {
+    public const string InsertSql = """
+        INSERT INTO search_index
+            (item_id, source_id, session_id, turn_id, prompt, response, tool, subagent, workflow, model, tags)
+        VALUES
+            ($itemId, $sourceId, $sessionId, $turnId, $prompt, $response, $tool, $subagent, $workflow, $model, $tags);
+        """;
+
     public static void Upsert(SqliteConnection connection, SearchDocument document, SqliteTransaction? transaction = null)
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(document);
         Delete(connection, document.ItemId, transaction);
+        Insert(connection, document, transaction);
+    }
+
+    /// <summary>
+    /// Inserts a document without the <see cref="Delete"/> lookup. Locating an existing row by
+    /// item_id scans the whole FTS table, so callers that already know the item is new must use
+    /// this overload to keep bulk indexing linear.
+    /// </summary>
+    public static void Insert(SqliteConnection connection, SearchDocument document, SqliteTransaction? transaction = null)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(document);
         Execute(
             connection,
             transaction,
-            """
-            INSERT INTO search_index
-                (item_id, source_id, session_id, turn_id, prompt, response, tool, subagent, workflow, model, tags)
-            VALUES
-                ($itemId, $sourceId, $sessionId, $turnId, $prompt, $response, $tool, $subagent, $workflow, $model, $tags);
-            """,
+            InsertSql,
             ("$itemId", document.ItemId),
             ("$sourceId", document.SourceId),
             ("$sessionId", (object?)document.SessionId ?? DBNull.Value),
@@ -77,8 +91,10 @@ public sealed class FtsIndexingService
     public static void Rebuild(SqliteConnection connection)
     {
         ArgumentNullException.ThrowIfNull(connection);
-        Execute(connection, null, "DELETE FROM search_index;");
+        using var transaction = connection.BeginTransaction();
+        Execute(connection, transaction, "DELETE FROM search_index;");
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             SELECT
                 se.event_fingerprint,
@@ -118,22 +134,26 @@ public sealed class FtsIndexingService
                 se.workflow,
                 se.model;
             """;
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
+        using (var reader = command.ExecuteReader())
         {
-            Upsert(connection, new SearchDocument(
-                reader.GetString(0),
-                reader.GetString(1),
-                reader.IsDBNull(2) ? null : reader.GetString(2),
-                reader.IsDBNull(3) ? null : reader.GetString(3),
-                reader.GetString(4),
-                reader.GetString(5),
-                reader.GetString(6),
-                reader.GetString(7),
-                reader.GetString(8),
-                reader.GetString(9),
-                reader.GetString(10)));
+            while (reader.Read())
+            {
+                Insert(connection, new SearchDocument(
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2),
+                    reader.IsDBNull(3) ? null : reader.GetString(3),
+                    reader.GetString(4),
+                    reader.GetString(5),
+                    reader.GetString(6),
+                    reader.GetString(7),
+                    reader.GetString(8),
+                    reader.GetString(9),
+                    reader.GetString(10)), transaction);
+            }
         }
+
+        transaction.Commit();
     }
 
     public static IReadOnlyList<SearchResult> Search(SqliteConnection connection, string query, int limit = 50)

@@ -407,7 +407,9 @@ public sealed record SyncStatus(
     int ProcessedFiles = 0,
     int ImportedEvents = 0,
     int WarningCount = 0,
-    string? CurrentFileName = null);
+    string? CurrentFileName = null,
+    int CurrentFileTotalEvents = 0,
+    int CurrentFileProcessedEvents = 0);
 
 public sealed class SyncJobService
 {
@@ -502,7 +504,16 @@ public sealed class SyncJobService
         }
     }
 
-    public void UpdateProgress(Guid id, string phase, int totalFiles, int processedFiles, int importedEvents, int warningCount, string? currentFileName)
+    public void UpdateProgress(
+        Guid id,
+        string phase,
+        int totalFiles,
+        int processedFiles,
+        int importedEvents,
+        int warningCount,
+        string? currentFileName,
+        int currentFileTotalEvents = 0,
+        int currentFileProcessedEvents = 0)
     {
         if (statuses.TryGetValue(id, out var status))
         {
@@ -513,19 +524,32 @@ public sealed class SyncJobService
                 ProcessedFiles = processedFiles,
                 ImportedEvents = importedEvents,
                 WarningCount = warningCount,
-                CurrentFileName = string.IsNullOrWhiteSpace(currentFileName) ? null : Path.GetFileName(currentFileName)
+                CurrentFileName = string.IsNullOrWhiteSpace(currentFileName) ? null : Path.GetFileName(currentFileName),
+                CurrentFileTotalEvents = currentFileTotalEvents,
+                CurrentFileProcessedEvents = currentFileProcessedEvents
             };
         }
     }
 
     public void MarkCompleted(Guid id, IReadOnlyList<ImportSummary> imports, string? error = null)
     {
+        MarkFinished(id, imports, error, cancelled: false);
+    }
+
+    public void MarkCancelled(Guid id, IReadOnlyList<ImportSummary> imports)
+    {
+        MarkFinished(id, imports, "資料工作已在關閉服務時取消", cancelled: true);
+    }
+
+    private void MarkFinished(Guid id, IReadOnlyList<ImportSummary> imports, string? error, bool cancelled)
+    {
         if (statuses.TryGetValue(id, out var status))
         {
             var failed = imports.Any(item => item.Errors.Count > 0 || item.Status is AdapterCapabilityStatus.NotFound or AdapterCapabilityStatus.PermissionDenied or AdapterCapabilityStatus.UnsupportedVersion);
             statuses[id] = status with
             {
-                Status = error is not null ? "failed" : failed && imports.Any(item => item.ImportedEventCount > 0) ? "partial" : failed ? "failed" : "completed",
+                Status = cancelled ? "cancelled" : error is not null ? "failed" : failed && imports.Any(item => item.ImportedEventCount > 0) ? "partial" : failed ? "failed" : "completed",
+                Phase = cancelled ? "cancelled" : status.Phase,
                 CompletedAtUtc = DateTimeOffset.UtcNow,
                 Imports = imports,
                 Error = error
@@ -543,6 +567,8 @@ public sealed class SyncJobService
 
 public sealed class SyncWorker : BackgroundService
 {
+    private const int ScanProgressInterval = 25;
+
     private readonly SyncJobService jobs;
     private readonly SourceAdapterRegistry adapters;
     private readonly DashboardStore store;
@@ -566,7 +592,16 @@ public sealed class SyncWorker : BackgroundService
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            var job = await jobs.Dequeue(stoppingToken);
+            (Guid Id, SyncRequest Request) job;
+            try
+            {
+                job = await jobs.Dequeue(stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
             jobs.MarkRunning(job.Id);
             var summaries = new List<ImportSummary>();
             try
@@ -609,6 +644,7 @@ public sealed class SyncWorker : BackgroundService
                 }
 
                 var files = new List<(ILogSourceAdapter Adapter, string Path, string SourcePath, ManifestDecision? Manifest)>();
+                var scanned = 0;
                 foreach (var source in sources)
                 {
                     var summaryStart = summaries.Count;
@@ -619,12 +655,19 @@ public sealed class SyncWorker : BackgroundService
 
                     foreach (var file in ExpandSupportedFiles(source.Path, summaries))
                     {
+                        stoppingToken.ThrowIfCancellationRequested();
                         var manifest = job.Request.CleanupPathsAfterCompletion
                             ? null
                             : manifests.Prepare(source.Adapter.Kind.ToString(), source.Path, file);
                         if (manifest is null || !manifest.Skip)
                         {
                             files.Add((source.Adapter, file, source.Path, manifest));
+                        }
+
+                        scanned++;
+                        if (scanned % ScanProgressInterval == 0)
+                        {
+                            jobs.UpdateProgress(job.Id, "scanning", 0, scanned, 0, summaries.Sum(item => item.Errors.Count), file);
                         }
                     }
 
@@ -636,11 +679,39 @@ public sealed class SyncWorker : BackgroundService
 
                 jobs.UpdateProgress(job.Id, "importing", files.Count, 0, 0, summaries.Sum(item => item.Errors.Count), null);
                 var processed = 0;
+                var importedEvents = 0;
+
+                // Constructing an ImportService runs a schema migration check, so the job keeps one
+                // instance instead of repeating that work for every file.
+                var importer = store.Read(connection => new ImportService(connection));
                 foreach (var file in files)
                 {
+                    stoppingToken.ThrowIfCancellationRequested();
                     var importId = Guid.NewGuid().ToString("N");
-                    var summary = store.Read(connection => new ImportService(connection).Import(importId, file.Path, file.Adapter, file.Path, job.Request.WorkspaceId, job.Request.OwnerId));
+                    var currentProcessed = processed;
+                    var currentFiles = files.Count;
+                    var currentImported = importedEvents;
+                    var currentWarnings = summaries.Sum(item => item.Errors.Count);
+                    var summary = store.Read(_ => importer.Import(
+                        importId,
+                        file.Path,
+                        file.Adapter,
+                        file.Path,
+                        job.Request.WorkspaceId,
+                        job.Request.OwnerId,
+                        progress => jobs.UpdateProgress(
+                            job.Id,
+                            "importing",
+                            currentFiles,
+                            currentProcessed,
+                            currentImported,
+                            currentWarnings,
+                            file.Path,
+                            progress.TotalEvents,
+                            progress.ProcessedEvents),
+                        stoppingToken));
                     summaries.Add(summary);
+                    importedEvents += summary.ImportedEventCount;
                     if (!job.Request.CleanupPathsAfterCompletion)
                     {
                         manifests.Record(file.Manifest!, importId, summary.Errors.Count == 0 ? "completed" : "partial", summary.Errors.Count == 0 ? null : string.Join("; ", summary.Errors.Select(item => item.Message)));
@@ -650,13 +721,20 @@ public sealed class SyncWorker : BackgroundService
                         }
                     }
                     processed++;
-                    jobs.UpdateProgress(job.Id, "importing", files.Count, processed, summaries.Sum(item => item.ImportedEventCount), summaries.Sum(item => item.Errors.Count), file.Path);
+                    jobs.UpdateProgress(job.Id, "importing", files.Count, processed, importedEvents, summaries.Sum(item => item.Errors.Count), file.Path);
                 }
 
-                jobs.UpdateProgress(job.Id, "materializing", files.Count, processed, summaries.Sum(item => item.ImportedEventCount), summaries.Sum(item => item.Errors.Count), null);
-                data.RebuildRollups(stoppingToken);
+                if (importedEvents > 0)
+                {
+                    jobs.UpdateProgress(job.Id, "materializing", files.Count, processed, importedEvents, summaries.Sum(item => item.Errors.Count), null);
+                    data.RebuildRollups(stoppingToken);
+                }
 
                 jobs.MarkCompleted(job.Id, summaries);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                jobs.MarkCancelled(job.Id, summaries);
             }
             catch (Exception exception)
             {
