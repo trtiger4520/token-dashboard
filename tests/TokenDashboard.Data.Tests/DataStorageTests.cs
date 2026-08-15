@@ -155,6 +155,32 @@ public sealed class DataStorageTests
     }
 
     [Fact]
+    public void LockedSourceReturnsRecoverableParseError()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var path = WriteTemporaryFile(".jsonl", "{\"type\":\"event\"}");
+        try
+        {
+            using (var writer = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.None))
+            {
+                var result = new CodexCliAdapter().Parse(path, TestContext.Current.CancellationToken);
+
+                Assert.Empty(result.Events);
+                Assert.Equal(AdapterCapabilityStatus.ParseFallback, result.Status);
+                Assert.Contains(result.Errors, error => error.Message == "Source file is currently in use. Retry after the writer releases it");
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void ClaudeProviderJsonlPreservesMessagesToolsAndUsage()
     {
         var result = new ClaudeCodeCliAdapter().Parse(

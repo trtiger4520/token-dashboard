@@ -297,6 +297,34 @@ describe('dashboard API states and interaction surface', () => {
     expect(toggle.attributes('aria-expanded')).toBe('false')
   })
 
+  it('replaces a locked source file error with recovery guidance', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/api/sources/import') && init?.method === 'POST') {
+        return jsonResponse({ syncId: 'import-1', status: 'queued' }, 202)
+      }
+      if (String(input).endsWith('/api/sync/import-1')) {
+        return jsonResponse({ syncId: 'import-1', status: 'failed', error: "The process cannot access the file because it is being used by another process" })
+      }
+
+      return dashboardFetch(input, init)
+    })
+    const wrapper = mount(App)
+    await flushPromises()
+    const input = wrapper.get('#control-rail input[type="file"]')
+    const file = new File(['{"event":"tool"}'], 'codex-log.json', { type: 'application/json' })
+    Object.defineProperty(file, 'text', { value: async () => '{"event":"tool"}' })
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [file]
+    })
+
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('來源檔案正在由其他程式寫入，請稍後再試')
+    expect(wrapper.text()).not.toContain('The process cannot access the file')
+  })
+
   it('clears a source preview when its path or adapter changes', async () => {
     window.history.replaceState({}, document.title, '/settings')
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {

@@ -8,7 +8,7 @@ FORM: Operate-mode control rail / comparison matrix / session timeline drawer
 */
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { routerKey, routeLocationKey } from 'vue-router'
-import { extractStartupKey, TokenDashboardClient, type ManagedSource, type SourceDiscoveryResult, type SyncRequest } from './api'
+import { extractStartupKey, TokenDashboardClient, type ManagedSource, type SourceDiscoveryResult, type SyncRequest, type SyncStatus } from './api'
 import { isValidDateRange, resolveDateRange, resolveDayRange, type DatePreset } from './dateRange'
 import { cacheTokenCount, createEmptyDashboardData, formatDateLabel, formatNumber, formatTokenCount, formatUsd, inputTokenCount, outputTokenCount, totalTokens, type Budget, type BudgetSummary, type DashboardData, type DashboardQuery, type EventKind, type PricingEntry, type SavedView, type SearchResult, type SessionRecord, type TagRecord, type TokenType, type TrendPoint, type UnknownPricing } from './types'
 import { layoutTreemap, type TreemapRect } from './treemap'
@@ -577,6 +577,14 @@ function removeAssignment(assignment: TagRecord): void {
   })
 }
 
+function dataJobMessage(status: SyncStatus, completedMessage: string): string {
+  if (!status.error) return completedMessage
+  if (/being used by another process|source file is currently in use/i.test(status.error)) {
+    return '來源檔案正在由其他程式寫入，請稍後再試'
+  }
+  return status.error
+}
+
 async function onImport(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
@@ -589,7 +597,7 @@ async function onImport(event: Event): Promise<void> {
   try {
     const queued = await client.importFile(file, sourceAdapter.value)
     const completed = await client.waitForSync(queued.syncId)
-    operationMessage.value = completed.error ?? `${file.name} 已完成匯入`
+    operationMessage.value = dataJobMessage(completed, `${file.name} 已完成匯入`)
     await refresh()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '匯入失敗，請確認檔案格式與來源欄位'
@@ -720,7 +728,7 @@ async function syncSources(): Promise<void> {
     const started = await client.startSync(request)
     operationMessage.value = `同步 ${started.status}`
     const status = await client.waitForSync(started.syncId)
-    operationMessage.value = status.error ?? `同步${status.status === 'partial' ? '部分完成' : '完成'}`
+    operationMessage.value = dataJobMessage(status, `同步${status.status === 'partial' ? '部分完成' : '完成'}`)
     const partialSync = status.status === 'partial'
     syncState.value = partialSync ? 'partial' : status.status === 'failed' ? 'error' : syncState.value
     await refresh()
@@ -1030,7 +1038,7 @@ onBeforeUnmount(() => {
           <label>Adapter<select v-model="sourceAdapter"><option value="auto">依檔名判斷</option><option value="claude-code-app">Claude Code App</option><option value="claude-code-cli">Claude Code CLI</option><option value="codex-app">Codex App</option><option value="codex-cli">Codex CLI</option></select></label>
           <label>自訂來源路徑<input v-model="sourcePath" placeholder="C:\\workspace\\logs" /></label>
           <div class="button-row"><button class="button button-secondary" type="button" :disabled="dataJobActive" @click="void discoverSources()">掃描來源</button><button class="button button-primary" type="button" :disabled="dataJobActive" @click="void syncSources()">開始同步</button></div>
-          <p v-if="discoveredSources.length" class="rail-note"><span v-for="source in discoveredSources" :key="source.adapter" class="discovery-result"><strong>{{ source.adapter }}</strong> · {{ source.paths.length ? source.paths.join(' · ') : '未發現路徑' }}</span></p>
+          <p v-if="discoveredSources.length" class="rail-note"><span v-for="source in discoveredSources" :key="source.adapter" class="discovery-result"><strong>{{ source.adapter }}</strong> · {{ source.paths.length ? `${source.paths.length} 個可用路徑` : '未發現路徑' }}</span></p>
           <label class="file-button" :class="{ disabled: dataJobActive }">匯入 JSON / CSV<input type="file" :disabled="dataJobActive" accept=".json,.csv,application/json,text/csv" @change="void onImport($event)" /></label>
         </section>
 
