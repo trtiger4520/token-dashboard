@@ -1,4 +1,51 @@
+/* Stratum Docs 字級階梯：11 / 12 / 13 / 14 / 16 / 17.6 / 18 / 20.8 / 35px。要更強的階層請加字重、留白與規則線，不新增級距 */
+
+/* 只載入實際使用的 latin 子集；CJK 由 --font-sans / --font-mono 尾端的系統字體承接 */
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-latin-standard-normal.woff2") format("woff2-variations");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "JetBrains Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 800;
+  src: url("@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* 與 Inter 對齊行高與字寬的替代面，讓 swap 期間與載入失敗時都不產生版面位移
+   必須宣告粗體面：:root 設了 font-synthesis: none，單一 400 面會讓 600 的標題整片失去粗細
+   size-adjust 與 override 是對實際出貨的 Inter 4 檔案量測求解，非沿用通用值
+   Liberation Sans 與 Arial 度量相容，因此共用同一組數值 */
+@font-face {
+  font-family: "Inter Fallback";
+  font-weight: 100 500;
+  src: local("Arial"), local("Helvetica Neue"), local("Liberation Sans");
+  size-adjust: 97.96%;
+  ascent-override: 99.14%;
+  descent-override: 24.71%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Inter Fallback";
+  font-weight: 600 900;
+  src: local("Arial Bold"), local("Helvetica Neue Bold"), local("Liberation Sans Bold");
+  size-adjust: 96.79%;
+  ascent-override: 99.14%;
+  descent-override: 24.71%;
+  line-gap-override: 0%;
+}
+
 :root {
+  --font-sans: "Inter Variable", Inter, "Inter Fallback", system-ui, -apple-system, "Segoe UI", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", monospace;
   --sheet: oklch(0.99 0 0);
   --card: oklch(1 0 0);
   --muted: oklch(0.985 0 0);
@@ -22,10 +69,17 @@
   --danger-muted: oklch(0.965 0.015 25);
   color: var(--ink);
   background: var(--sheet);
-  font-family: Inter, "Inter Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
+  /* cv02/cv03/cv04/cv11：可辨識的 l／1 與開口的 6／9，讓 model id、旗標與路徑在小字級不會被讀錯 */
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  font-optical-sizing: auto;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
+
+::selection { background: color-mix(in oklch, var(--blue) 10%, transparent); }
 
 [data-mode="dark"] {
   --sheet: oklch(0.18 0.008 258);
@@ -47,6 +101,22 @@
   --danger-muted: oklch(0.3 0.035 25);
 }
 
+/* 淺字壓在深紙上會顯瘦，用字重補回來；行高與字距刻意不動，否則切換模式會讓整個工作區重排 */
+[data-mode="dark"] label,
+[data-mode="dark"] .rail-note,
+[data-mode="dark"] .kpi-meta,
+[data-mode="dark"] .panel-header p,
+[data-mode="dark"] .monthly-row,
+[data-mode="dark"] .stat-strip,
+[data-mode="dark"] .treemap-detail,
+[data-mode="dark"] .session-main span,
+[data-mode="dark"] .session-meta,
+[data-mode="dark"] .tag-assignment { font-weight: 420; }
+[data-mode="dark"] .mono,
+[data-mode="dark"] code,
+[data-mode="dark"] .session-token-summary span,
+[data-mode="dark"] .heatmap-cell { font-weight: 500; }
+
 * { box-sizing: border-box; }
 html { min-width: 320px; background: var(--sheet); }
 body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--sheet); }
@@ -55,20 +125,23 @@ button, select, input[type="file"] { cursor: pointer; }
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 button { color: inherit; }
 h1, h2, h3, p { margin: 0; }
-h1, h2, h3 { letter-spacing: -0.015em; }
-h1 { font-size: 1.3rem; line-height: 1.4; font-weight: 600; }
-h2 { font-size: 1.3rem; line-height: 1.4; font-weight: 600; }
-h3 { font-size: 1.1rem; line-height: 1.4; font-weight: 600; }
+h1 { font-size: 2.1875rem; line-height: 1.2; font-weight: 600; letter-spacing: -0.025em; }
+h2 { font-size: 1.3rem; line-height: 1.4; font-weight: 600; letter-spacing: -0.015em; }
+h3 { font-size: 1.1rem; line-height: 1.4; font-weight: 600; letter-spacing: -0.01em; }
 p { line-height: 1.6; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-.mono, code, kbd { font-family: "JetBrains Mono", "JetBrains Mono Variable", ui-monospace, Consolas, monospace; font-size: 0.75rem; }
+.mono { font-family: var(--font-mono); font-size: 0.75rem; font-weight: 450; font-variant-numeric: tabular-nums; }
+code { font-family: var(--font-mono); font-size: 0.875em; font-weight: 450; }
+kbd { font-family: var(--font-mono); font-size: 0.6875rem; font-weight: 500; }
 .eyebrow { color: var(--muted-ink); font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.05em; line-height: 1.4; }
+/* 統計磚的識別標籤：它要壓過底下較長的說明列，所以不用 11px 的 eyebrow */
+.stat-label { color: var(--muted-ink); font-size: 0.8125rem; font-weight: 600; letter-spacing: 0.01em; line-height: 1.4; }
 .unknown { color: var(--warning) !important; }
 
 .app-frame { min-height: 100vh; }
 .topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 1.5rem; min-height: 4rem; padding: 0.75rem 1.5rem; border-bottom: 1px solid var(--border); background: color-mix(in oklch, var(--sheet) 85%, transparent); backdrop-filter: blur(8px); }
 .wordmark { display: flex; align-items: center; gap: 0.625rem; min-width: 11rem; font-size: 0.875rem; font-weight: 600; }
-.wordmark-mark { display: grid; width: 1.75rem; height: 1.75rem; place-items: center; border: 1px solid var(--blue); border-radius: 0.375rem; color: var(--blue); font-family: "JetBrains Mono", monospace; font-size: 0.6875rem; }
+.wordmark-mark { display: grid; width: 1.75rem; height: 1.75rem; place-items: center; border: 1px solid var(--blue); border-radius: 0.375rem; color: var(--blue); font-family: var(--font-mono); font-size: 0.6875rem; }
 .topbar-context { display: flex; align-items: center; gap: 0.75rem; color: var(--muted-ink); }
 .topbar-divider { width: 1px; height: 1rem; background: var(--border); }
 .topbar-actions { display: flex; align-items: center; gap: 0.5rem; margin-left: auto; }
@@ -86,7 +159,8 @@ p { line-height: 1.6; }
 .rail-section { display: grid; gap: 0.625rem; padding: 1rem 0; border-bottom: 1px solid var(--border); }
 .rail-section:first-child { padding-top: 0; }
 .panel-header p { color: var(--muted-ink); font-size: 0.8125rem; }
-.section-label { font-size: 0.8125rem; letter-spacing: 0; }
+/* 分區標題必須壓過同區的 12px 欄位標題與註記，13px 的差距不足以承擔分區的工作 */
+.section-label { font-size: 0.875rem; line-height: 1.4; letter-spacing: 0; }
 .section-heading-row, .panel-header, .turn-label, .monthly-row, .session-row, .event-row, .stat-strip, .dialog-actions, .button-row, .topbar-actions { display: flex; align-items: center; }
 .section-heading-row, .panel-header { justify-content: space-between; gap: 0.75rem; }
 .preset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.375rem; }
@@ -96,13 +170,21 @@ p { line-height: 1.6; }
 .date-shortcuts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.375rem; }
 .date-shortcuts .button { min-width: 0; padding: 0 0.25rem; font-size: 0.75rem; }
 .date-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
-label { display: grid; gap: 0.25rem; color: var(--muted-ink); font-size: 0.75rem; }
-input, select { width: 100%; height: 2.25rem; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--card); color: var(--ink); padding: 0 0.625rem; }
+label { display: grid; gap: 0.25rem; color: var(--muted-ink); font-size: 0.75rem; line-height: 1.5; }
+/* 欄位承載使用者輸入的路徑、金額與日期，字級跟隨 label 級距而非 12px 的欄位標題 */
+input, select { width: 100%; height: 2.25rem; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--card); color: var(--ink); padding: 0 0.625rem; font-size: 0.875rem; font-variant-numeric: tabular-nums; }
 input:hover, select:hover { border-color: var(--border-strong); background: var(--accent); }
 input::placeholder { color: var(--muted-ink); }
 .rail-note { color: var(--muted-ink); font-size: 0.75rem; line-height: 1.5; overflow-wrap: anywhere; }
+/* 具名檢視與預算清單先前沒有規則，會以 16px 掉進 12px 的控制軌 */
+.tag-assignment-list { display: grid; gap: 0.25rem; }
+.tag-assignment { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; min-width: 0; color: var(--muted-ink); font-size: 0.75rem; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.tag-assignment > span:first-child { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
+.tag-assignment strong { color: var(--ink); font-weight: 500; }
+.tag-assignment button { border: 0; background: transparent; color: var(--muted-ink); padding: 0 0.25rem; font-size: 0.75rem; }
+.tag-assignment button:hover { color: var(--ink); }
 .warning-copy { color: var(--warning); }
-.button { min-height: 2.25rem; border: 1px solid transparent; border-radius: 9999px; padding: 0 0.75rem; font-size: 0.8125rem; font-weight: 500; transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease; }
+.button { min-height: 2.25rem; border: 1px solid transparent; border-radius: 9999px; padding: 0 0.75rem; font-size: 0.875rem; font-weight: 500; line-height: 1.4; transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease; }
 .button:hover { border-color: var(--border-strong); }
 .button-primary { border-color: var(--blue); background: var(--blue); color: var(--blue-ink); }
 .button-primary:hover { border-color: var(--blue-hover); background: var(--blue-hover); }
@@ -114,7 +196,7 @@ input::placeholder { color: var(--muted-ink); }
 .button-icon { min-width: 3.5rem; border-color: var(--border); background: var(--card); color: var(--muted-ink); }
 .button-row { gap: 0.375rem; }
 .button-row .button { flex: 1; padding: 0 0.25rem; }
-.file-button { display: grid; align-items: center; min-height: 2.25rem; border: 1px solid var(--border); border-radius: 9999px; background: var(--card); padding: 0 0.75rem; color: var(--ink); text-align: center; }
+.file-button { display: grid; align-items: center; min-height: 2.25rem; border: 1px solid var(--border); border-radius: 9999px; background: var(--card); padding: 0 0.75rem; color: var(--ink); font-size: 0.875rem; font-weight: 500; text-align: center; }
 .file-button input { display: none; }
 .badge, .tag { display: inline-flex; align-items: center; gap: 0.25rem; width: fit-content; border-radius: 9999px; padding: 0.125rem 0.5rem; font-size: 0.6875rem; line-height: 1.4; }
 .badge-neutral, .tag-neutral { border: 1px solid var(--border); background: var(--muted); color: var(--muted-ink); }
@@ -130,15 +212,16 @@ input::placeholder { color: var(--muted-ink); }
 .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.625rem; margin-bottom: 0.75rem; }
 .kpi-panel, .panel { border: 1px solid var(--border); background: var(--card); }
 .kpi-panel { display: grid; gap: 0.375rem; min-height: 7rem; padding: 0.875rem; }
-.kpi-panel strong { font-family: "JetBrains Mono", monospace; font-size: 1.1rem; font-weight: 500; }
-.kpi-meta { color: var(--muted-ink); font-size: 0.75rem; }
+/* 主要數字要壓過同一視窗裡 17.6px 的面板標題，否則量測結果讀起來只是另一個標題 */
+.kpi-panel strong { font-family: var(--font-mono); font-size: 1.3rem; font-weight: 500; line-height: 1.4; font-variant-numeric: tabular-nums; }
+.kpi-meta { color: var(--muted-ink); font-size: 0.75rem; line-height: 1.5; font-variant-numeric: tabular-nums; }
 .evidence-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(15rem, 0.6fr); gap: 0.75rem; margin-bottom: 0.75rem; }
 .panel { border-radius: 0.75rem; }
 .panel-header { min-height: 3.5rem; border-bottom: 1px solid var(--border); padding: 0.75rem 1rem; }
 .panel-header h3 { margin-top: 0.125rem; }
 .panel-header p { margin-top: 0.25rem; color: var(--muted-ink); font-size: 0.75rem; }
 .trend-controls { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.25rem; }
-.trend-controls button { border: 1px solid var(--border); border-radius: 9999px; background: var(--card); padding: 0.3rem 0.5rem; color: var(--muted-ink); font-size: 0.6875rem; }
+.trend-controls button { border: 1px solid var(--border); border-radius: 9999px; background: var(--card); padding: 0.3rem 0.5rem; color: var(--muted-ink); font-size: 0.75rem; line-height: 1.4; }
 .trend-controls button:hover, .trend-controls button.selected { border-color: var(--blue); color: var(--blue); }
 .daily-chart { display: block; width: 100%; height: 10rem; overflow: visible; }
 .chart-wrap { padding: 0.75rem 1rem 0; }
@@ -149,12 +232,12 @@ input::placeholder { color: var(--muted-ink); }
 .chart-labels button { border: 0; background: transparent; color: var(--muted-ink); font-size: 0.6875rem; padding: 0.25rem 0; }
 .chart-labels button:hover, .chart-labels button.selected { color: var(--blue); }
 .trend-labels { display: flex; overflow: hidden; justify-content: space-between; gap: 0.5rem; }
-.trend-labels span { overflow: hidden; min-width: 0; color: var(--muted-ink); font-size: 0.625rem; text-overflow: ellipsis; white-space: nowrap; }
-.panel-empty { padding: 2rem 1rem; color: var(--muted-ink); font-size: 0.75rem; text-align: center; }
-.stat-strip { justify-content: space-between; gap: 0.5rem; margin: 0.75rem 1rem 1rem; border-top: 1px solid var(--border); padding-top: 0.75rem; color: var(--muted-ink); font-size: 0.75rem; }
-.stat-strip b { color: var(--ink); font-family: "JetBrains Mono", monospace; font-weight: 500; }
+.trend-labels span { overflow: hidden; min-width: 0; color: var(--muted-ink); font-size: 0.6875rem; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.panel-empty { padding: 2rem 1rem; color: var(--muted-ink); font-size: 0.75rem; line-height: 1.5; text-align: center; }
+.stat-strip { justify-content: space-between; gap: 0.5rem; margin: 0.75rem 1rem 1rem; border-top: 1px solid var(--border); padding-top: 0.75rem; color: var(--muted-ink); font-size: 0.75rem; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.stat-strip b { color: var(--ink); font-family: var(--font-mono); font-weight: 500; }
 .heatmap { display: grid; grid-template-columns: repeat(7, 1fr); gap: 0.375rem; padding: 1rem; }
-.heatmap-cell { aspect-ratio: 1; border: 1px solid var(--border); border-radius: 0.25rem; background: var(--muted); color: var(--muted-ink); font-family: "JetBrains Mono", monospace; font-size: 0.6875rem; }
+.heatmap-cell { aspect-ratio: 1; border: 1px solid var(--border); border-radius: 0.25rem; background: var(--muted); color: var(--muted-ink); font-family: var(--font-mono); font-size: 0.6875rem; font-variant-numeric: tabular-nums; }
 .heatmap-cell:hover, .heatmap-cell.selected { border-color: var(--blue); color: var(--blue); }
 .intensity-1 { background: var(--muted); }
 .intensity-2 { background: color-mix(in oklch, var(--ink) 8%, var(--card)); }
@@ -171,11 +254,11 @@ input::placeholder { color: var(--muted-ink); }
 .treemap-node rect { fill: var(--muted); stroke: var(--card); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .treemap-node.treemap-depth-1 rect { fill: var(--card); }
 .treemap-node:hover rect, .treemap-node:focus rect, .treemap-node:focus-within rect { stroke: var(--blue); stroke-width: 2; }
-.treemap-node text { fill: var(--ink); font-size: 10px; pointer-events: none; }
-.treemap-detail { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; border-top: 1px solid var(--border); padding: 0.75rem 1rem; color: var(--muted-ink); font-size: 0.75rem; }
+.treemap-node text { fill: var(--ink); font-size: 0.6875rem; font-weight: 500; pointer-events: none; }
+.treemap-detail { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; border-top: 1px solid var(--border); padding: 0.75rem 1rem; color: var(--muted-ink); font-size: 0.75rem; line-height: 1.5; font-variant-numeric: tabular-nums; }
 .treemap-detail strong { color: var(--ink); }
 .table-scroll { overflow-x: auto; }
-table { width: 100%; min-width: 42rem; border-collapse: collapse; font-size: 0.75rem; }
+table { width: 100%; min-width: 42rem; border-collapse: collapse; font-size: 0.75rem; line-height: 1.5; font-variant-numeric: tabular-nums; }
 th, td { border-bottom: 1px solid var(--border); padding: 0.625rem 0.75rem; text-align: left; white-space: nowrap; }
 thead th { background: var(--sunken); color: var(--muted-ink); font-size: 0.6875rem; font-weight: 600; }
 tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
@@ -184,7 +267,7 @@ tbody tr:hover { background: var(--accent); }
 .search-control { position: relative; display: flex; align-items: center; width: min(18rem, 48%); }
 .search-control input { padding-right: 3.25rem; }
 .search-control kbd { position: absolute; right: 0.5rem; border: 1px solid var(--border); border-radius: 0.25rem; background: var(--muted); padding: 0.125rem 0.25rem; color: var(--muted-ink); }
-.search-results { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; border-bottom: 1px solid var(--border); background: var(--sunken); padding: 0.625rem 1rem; font-size: 0.75rem; }
+.search-results { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; border-bottom: 1px solid var(--border); background: var(--sunken); padding: 0.625rem 1rem; font-size: 0.75rem; line-height: 1.5; }
 .result-link { border: 0; background: transparent; color: var(--blue); font-size: 0.75rem; text-decoration: underline; text-underline-offset: 2px; }
 .session-list { display: grid; }
 .session-row { justify-content: space-between; width: 100%; gap: 1rem; border: 0; border-bottom: 1px solid var(--border); background: transparent; padding: 0.75rem 1rem; text-align: left; }
@@ -194,9 +277,9 @@ tbody tr:hover { background: var(--accent); }
 .session-main, .session-meta { display: flex; align-items: center; gap: 0.75rem; min-width: 0; }
 .session-main { flex: 1; flex-direction: column; align-items: flex-start; }
 .session-main strong { overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; font-size: 0.8125rem; }
-.session-main span, .session-meta { color: var(--muted-ink); font-size: 0.75rem; }
+.session-main span, .session-meta { color: var(--muted-ink); font-size: 0.75rem; line-height: 1.5; font-variant-numeric: tabular-nums; }
 .session-token-summary { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-.session-token-summary span { color: var(--ink); font-family: "JetBrains Mono", monospace; font-size: 0.6875rem; }
+.session-token-summary span { color: var(--ink); font-family: var(--font-mono); font-size: 0.6875rem; font-variant-numeric: tabular-nums; }
 .session-meta { flex-wrap: wrap; justify-content: flex-end; }
 .session-meta .mono { color: var(--ink); }
 .timeline-panel .panel-header { align-items: flex-start; }
@@ -205,21 +288,21 @@ tbody tr:hover { background: var(--accent); }
 .turn-block { display: grid; grid-template-columns: 8rem minmax(0, 1fr); gap: 1rem; }
 .turn-block + .turn-block { margin-top: 0.75rem; }
 .turn-label { position: relative; align-items: flex-start; gap: 0.375rem; color: var(--muted-ink); font-size: 0.75rem; }
-.turn-number { display: grid; width: 1.5rem; height: 1.5rem; place-items: center; border: 1px solid var(--border); border-radius: 9999px; background: var(--muted); color: var(--ink); font-family: "JetBrains Mono", monospace; font-size: 0.6875rem; }
+.turn-number { display: grid; width: 1.5rem; height: 1.5rem; place-items: center; border: 1px solid var(--border); border-radius: 9999px; background: var(--muted); color: var(--ink); font-family: var(--font-mono); font-size: 0.6875rem; }
 .turn-label .mono { position: absolute; top: 1.875rem; left: 0; color: var(--muted-ink); }
 .event-list { display: grid; border-left: 1px solid var(--border); }
 .event-row { justify-content: space-between; gap: 0.75rem; width: 100%; border: 0; border-bottom: 1px solid var(--border); background: transparent; padding: 0.5rem 0.625rem; text-align: left; }
 .event-row:last-child { border-bottom: 0; }
 .event-row:hover, .event-row.selected { background: var(--accent); }
 .event-kind { min-width: 4rem; color: var(--blue); font-size: 0.6875rem; font-weight: 600; }
-.event-summary { flex: 1; font-size: 0.75rem; }
+.event-summary { flex: 1; font-size: 0.75rem; line-height: 1.5; }
 .event-row .mono { color: var(--muted-ink); }
-.event-detail { display: grid; gap: 0.375rem; margin: 0 1rem 1rem; border: 1px solid var(--border); background: var(--sunken); padding: 0.75rem; font-size: 0.75rem; }
+.event-detail { display: grid; gap: 0.375rem; margin: 0 1rem 1rem; border: 1px solid var(--border); background: var(--sunken); padding: 0.75rem; font-size: 0.75rem; line-height: 1.5; }
 .event-detail p { color: var(--muted-ink); }
 .tag-editor { display: flex; align-items: end; gap: 0.5rem; border-top: 1px solid var(--border); padding: 0.75rem 1rem 1rem; }
 .tag-editor label { flex: 1; }
 .monthly-list { padding: 0 1rem; }
-.monthly-row { justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--border); padding: 0.75rem 0; color: var(--muted-ink); font-size: 0.75rem; }
+.monthly-row { justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--border); padding: 0.75rem 0; color: var(--muted-ink); font-size: 0.75rem; line-height: 1.5; font-variant-numeric: tabular-nums; }
 .monthly-row:last-child { border-bottom: 0; }
 .monthly-row strong { color: var(--ink); }
 .monthly-row .mono { color: var(--ink); }
@@ -241,16 +324,16 @@ tbody tr:hover { background: var(--accent); }
 .managed-source-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 0.875rem 0; border-bottom: 1px solid var(--border); }
 .managed-source-row > div:first-child { display: grid; gap: 0.25rem; min-width: 0; }
 .managed-source-row strong { overflow-wrap: anywhere; }
-.managed-source-row span { color: var(--muted-ink); font-size: 0.75rem; }
+.managed-source-row span { color: var(--muted-ink); font-size: 0.75rem; line-height: 1.5; }
 .preview-summary { display: grid; gap: 0.25rem; border-left: 2px solid var(--blue); background: var(--sunken); padding: 0.75rem 1rem; }
-.preview-summary span { color: var(--muted-ink); font-size: 0.75rem; }
+.preview-summary span { color: var(--muted-ink); font-size: 0.75rem; line-height: 1.5; font-variant-numeric: tabular-nums; }
 .settings-tags { margin-top: 0.75rem; }
 .settings-tags button { margin-left: 0.4rem; border: 0; background: transparent; color: inherit; cursor: pointer; }
 .session-drawer { position: fixed; z-index: 20; inset: 0 0 0 auto; width: min(42rem, 92vw); display: grid; grid-template-rows: auto auto auto 1fr; border-left: 1px solid var(--border); background: var(--paper); }
 .session-drawer-header { display: flex; justify-content: space-between; gap: 1rem; padding: 1.25rem; border-bottom: 1px solid var(--border); }
 .session-drawer-header h2 { overflow-wrap: anywhere; }
-.session-drawer-header p { margin-top: 0.35rem; color: var(--muted-ink); font-size: 0.7rem; }
-.session-drawer-summary, .session-drawer-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; padding: 0.75rem 1.25rem; border-bottom: 1px solid var(--border); color: var(--muted-ink); font-size: 0.75rem; }
+.session-drawer-header p { margin-top: 0.35rem; color: var(--muted-ink); font-size: 0.6875rem; }
+.session-drawer-summary, .session-drawer-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; padding: 0.75rem 1.25rem; border-bottom: 1px solid var(--border); color: var(--muted-ink); font-size: 0.75rem; line-height: 1.5; font-variant-numeric: tabular-nums; }
 .session-drawer-actions { justify-content: space-between; }
 .session-drawer-content { overflow: auto; padding: 1rem 1.25rem 2rem; }
 .timeline-turn { display: grid; gap: 0.65rem; padding: 1rem 0; border-bottom: 1px solid var(--border); }
@@ -285,14 +368,15 @@ code { border: 1px solid var(--border); border-radius: 0.375rem; background: var
   .dashboard-layout { display: block; }
   .control-rail { border-right: 0; border-bottom: 1px solid var(--border); }
   .control-rail:not(.rail-open) { display: none; }
-  .mobile-control-toggle { display: flex; justify-content: space-between; align-items: center; width: 100%; min-height: 2.25rem; margin-bottom: 0.75rem; border: 1px solid var(--border); border-radius: 9999px; background: var(--card); padding: 0 0.75rem; color: var(--ink); font-size: 0.8125rem; font-weight: 500; text-align: left; }
+  .mobile-control-toggle { display: flex; justify-content: space-between; align-items: center; width: 100%; min-height: 2.25rem; margin-bottom: 0.75rem; border: 1px solid var(--border); border-radius: 9999px; background: var(--card); padding: 0 0.75rem; color: var(--ink); font-size: 0.875rem; font-weight: 500; text-align: left; }
   .mobile-control-toggle:hover { border-color: var(--border-strong); background: var(--accent); }
   .rail-section { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; }
   .rail-section > .section-heading-row, .rail-section > .rail-note, .rail-section > .button-full, .rail-section > .file-button { grid-column: 1 / -1; }
   .workspace { padding: 1rem; }
   .session-drawer { inset: 0; width: 100%; border-left: 0; }
   .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .evidence-grid { grid-template-columns: 1fr; }
+  /* 趨勢標籤是一列 nowrap 的 span，1fr 會把它的 min-content 帶進軌道寬度並把整頁撐開 */
+  .evidence-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 38rem) {
@@ -317,35 +401,36 @@ code { border: 1px solid var(--border); border-radius: 0.375rem; background: var
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
 }
 .topbar-nav { display: inline-flex; gap: .25rem; margin-left: auto; }
-.topbar-nav button { border: 1px solid transparent; background: transparent; color: var(--muted-ink); border-radius: 9999px; padding: .35rem .7rem; cursor: pointer; }
+.topbar-nav button { border: 1px solid transparent; background: transparent; color: var(--muted-ink); border-radius: 9999px; padding: .35rem .7rem; font-size: 0.8125rem; font-weight: 500; line-height: 1.4; cursor: pointer; }
+.topbar-nav button.active { font-weight: 600; }
 .topbar-nav button:hover, .topbar-nav button.active { background: var(--accent); border-color: var(--border); color: var(--ink); }
 .pricing-route { max-width: 72rem; margin: 0 auto; padding: 2rem 1.5rem; }
 .route-heading { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding-bottom: 1.25rem; margin-bottom: 1.5rem; }
 .route-heading h1 { margin: 0; }
-.route-heading p { flex: 1 1 100%; color: var(--muted-ink); margin: 0; }
+/* 單句路由說明維持在可讀的行長內，不隨視窗一路拉寬 */
+.route-heading p { flex: 1 1 100%; max-width: 55rem; color: var(--muted-ink); margin: 0; }
 .pricing-heading { align-items: end; justify-content: space-between; }
 .pricing-heading > div { display: grid; gap: 0.5rem; }
-.pricing-heading p { max-width: 55rem; }
 .pricing-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 1.5rem; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--card); }
 .pricing-summary article { display: grid; gap: 0.375rem; min-height: 7.5rem; padding: 1rem 1.125rem; border-right: 1px solid var(--border); }
 .pricing-summary article:last-child { border-right: 0; }
-.pricing-summary strong { font-family: "JetBrains Mono", monospace; font-size: 1.75rem; font-weight: 500; letter-spacing: -0.03em; }
-.pricing-summary article > span:last-child { color: var(--muted-ink); font-size: 0.75rem; }
-.pricing-summary .summary-warning strong, .pricing-summary .summary-warning .eyebrow { color: var(--warning); }
+.pricing-summary strong { font-family: var(--font-mono); font-size: 1.3rem; font-weight: 500; line-height: 1.4; font-variant-numeric: tabular-nums; }
+.pricing-summary article > span:last-child { color: var(--muted-ink); font-size: 0.75rem; line-height: 1.5; }
+.pricing-summary .summary-warning strong, .pricing-summary .summary-warning .stat-label { color: var(--warning); }
 .pricing-toolbar, .pricing-unknown, .pricing-editor, .pricing-overrides { margin-bottom: 1.5rem; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--card); padding: 1.125rem; }
 .pricing-toolbar-heading { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
 .pricing-toolbar-heading > div { display: grid; gap: 0.375rem; }
-.catalog-stamp { color: var(--muted-ink); font-size: 0.75rem; }
+.catalog-stamp { color: var(--muted-ink); font-size: 0.75rem; line-height: 1.5; }
 .pricing-filters { display: grid; grid-template-columns: minmax(16rem, 2fr) repeat(3, minmax(9rem, 1fr)); gap: 0.75rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border); }
 .pricing-search { min-width: 0; }
 .pricing-search input { min-width: 0; }
-.pricing-filter-result { margin: 0.75rem 0 1rem; color: var(--muted-ink); font-size: 0.75rem; }
+.pricing-filter-result { margin: 0.75rem 0 1rem; color: var(--muted-ink); font-size: 0.75rem; line-height: 1.5; font-variant-numeric: tabular-nums; }
 .pricing-table-scroll { max-height: 42rem; border: 1px solid var(--border); border-radius: 0.5rem; }
 .pricing-table { min-width: 66rem; }
 .pricing-table th { position: sticky; top: 0; z-index: 1; }
 .pricing-table td, .pricing-table th { white-space: nowrap; }
 .pricing-table td:first-child { display: flex; align-items: center; gap: 0.5rem; }
-.provider-mark { display: inline-grid; width: 1.25rem; height: 1.25rem; place-items: center; border: 1px solid var(--border-strong); border-radius: 0.375rem; color: var(--muted-ink); font-family: "JetBrains Mono", monospace; font-size: 0.625rem; }
+.provider-mark { display: inline-grid; width: 1.25rem; height: 1.25rem; place-items: center; border: 1px solid var(--border-strong); border-radius: 0.375rem; color: var(--muted-ink); font-family: var(--font-mono); font-size: 0.6875rem; font-weight: 500; }
 .provider-openai { color: var(--blue); border-color: color-mix(in oklch, var(--blue) 45%, var(--border)); }
 .provider-anthropic { color: var(--ink); }
 .model-cell, .price-cell { color: var(--ink); font-weight: 500; }
@@ -359,7 +444,7 @@ code { border: 1px solid var(--border); border-radius: 0.375rem; background: var
 .pricing-unknown > p { margin: 0.5rem 0 1rem; color: var(--muted-ink); font-size: 0.8125rem; }
 .pricing-merge-panel, .pricing-merge-confirm { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: 0 0 1rem; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--card); padding: 0.875rem 1rem; }
 .pricing-merge-panel > div:first-child, .pricing-merge-confirm > div:first-child { display: grid; gap: 0.25rem; }
-.pricing-merge-panel span, .pricing-merge-confirm span { color: var(--muted-ink); font-size: 0.75rem; }
+.pricing-merge-panel span, .pricing-merge-confirm span { color: var(--muted-ink); font-size: 0.75rem; line-height: 1.5; }
 .pricing-merge-confirm { border-color: var(--blue); background: var(--sheet); }
 .pricing-merge-checkbox { width: 1rem; height: 1rem; accent-color: var(--blue); }
 .pricing-suggestion-cell { display: grid; gap: 0.25rem; min-width: 18rem; white-space: normal !important; }
@@ -384,7 +469,6 @@ code { border: 1px solid var(--border); border-radius: 0.375rem; background: var
   .pricing-heading .button { width: 100%; }
   .pricing-summary { grid-template-columns: 1fr 1fr; }
   .pricing-summary article { min-height: 6.75rem; padding: 0.75rem; }
-  .pricing-summary strong { font-size: 1.375rem; }
   .pricing-toolbar, .pricing-unknown, .pricing-editor, .pricing-overrides { padding: 0.875rem; }
   .pricing-toolbar-heading { align-items: start; flex-direction: column; }
   .pricing-merge-panel, .pricing-merge-confirm { align-items: stretch; flex-direction: column; }

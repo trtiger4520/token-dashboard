@@ -949,10 +949,10 @@ onBeforeUnmount(() => {
       <div class="route-heading pricing-heading"><div><span class="eyebrow">PRICE GOVERNANCE / API CATALOG</span><h1 id="pricing-route-heading">價格治理</h1><p>用同一套歷史有效區間管理 OpenAI 與 Anthropic 的 API 成本規則，未知價格永遠保持未知</p><p v-if="operationMessage" class="rail-note" role="status">{{ operationMessage }}</p></div><button class="button button-secondary" type="button" @click="navigate('/dashboard')">返回 Dashboard</button></div>
 
       <div class="pricing-summary" aria-label="價格 catalog 摘要">
-        <article><span class="eyebrow">MODELS</span><strong>{{ pricingModelCount }}</strong><span>官方模型</span></article>
-        <article><span class="eyebrow">RATE ROWS</span><strong>{{ officialPricingEntries.length }}</strong><span>輸入、快取與輸出規則</span></article>
-        <article><span class="eyebrow">OVERRIDES</span><strong>{{ data.pricing.overrideCount }}</strong><span>本機有效覆寫</span></article>
-        <article :class="{ 'summary-warning': unknownPricing.length > 0 }"><span class="eyebrow">UNKNOWN</span><strong>{{ unknownPricing.length }}</strong><span>尚未匹配價格的組合</span></article>
+        <article><span class="stat-label">MODELS</span><strong>{{ pricingModelCount }}</strong><span>官方模型</span></article>
+        <article><span class="stat-label">RATE ROWS</span><strong>{{ officialPricingEntries.length }}</strong><span>輸入、快取與輸出規則</span></article>
+        <article><span class="stat-label">OVERRIDES</span><strong>{{ data.pricing.overrideCount }}</strong><span>本機有效覆寫</span></article>
+        <article :class="{ 'summary-warning': unknownPricing.length > 0 }"><span class="stat-label">UNKNOWN</span><strong>{{ unknownPricing.length }}</strong><span>尚未匹配價格的組合</span></article>
       </div>
 
       <section class="pricing-toolbar" aria-label="篩選官方價格">
@@ -1062,10 +1062,10 @@ onBeforeUnmount(() => {
         <div v-else-if="syncState === 'empty'" class="empty-state"><span class="eyebrow">沒有本機事件</span><h3>目前選取的日期與篩選條件沒有事件</h3><p>調整日期或來源篩選，或從左側匯入 JSON／CSV 資料</p><button class="button button-primary" type="button" @click="applyPreset('30')">查看最近 30 天</button></div>
         <template v-else>
           <section class="kpi-grid" aria-label="總覽指標">
-            <article class="kpi-panel"><span class="eyebrow">總 Token</span><strong :title="tokenTitle(totalTokenCount)">{{ formatTokenCount(totalTokenCount) }}</strong><span class="kpi-meta">輸入、輸出與快取合計，用於判斷工作量</span></article>
-            <article class="kpi-panel"><span class="eyebrow">已知成本</span><strong>{{ formatUsd(totalCost) }}</strong><span class="kpi-meta">USD · 套用價格版本 {{ data.pricing.version }}</span><span class="kpi-meta">成本覆蓋率 {{ data.overview.costCoverage === null ? '未知' : `${Math.round(data.overview.costCoverage * 100)}%` }}<template v-if="data.overview.costUsd === null"> · 已知費用 {{ formatUsd(data.overview.partialCostUsd) }}</template></span></article>
-             <article class="kpi-panel"><span class="eyebrow">事件／工作階段</span><strong>{{ formatNumber(data.overview.eventCount) }} / {{ formatNumber(totalSessions) }}</strong><span class="kpi-meta">事件 · 不重複工作階段 · 已載入 {{ visibleSessions.length }} 筆</span></article>
-            <article class="kpi-panel"><span class="eyebrow">快取命中率</span><strong>{{ averageCache === null ? '未知' : `${Math.round(averageCache * 100)}%` }}</strong><span class="kpi-meta">資料覆蓋 {{ data.overview.cacheCoverage === null ? '未知' : `${Math.round(data.overview.cacheCoverage * 100)}%` }} · {{ data.overview.cacheUnreportedEventCount }} 筆未回報</span></article>
+            <article class="kpi-panel"><span class="stat-label">總 Token</span><strong :title="tokenTitle(totalTokenCount)">{{ formatTokenCount(totalTokenCount) }}</strong><span class="kpi-meta">輸入、輸出與快取合計，用於判斷工作量</span></article>
+            <article class="kpi-panel"><span class="stat-label">已知成本</span><strong>{{ formatUsd(totalCost) }}</strong><span class="kpi-meta">USD · 套用價格版本 {{ data.pricing.version }}</span><span class="kpi-meta">成本覆蓋率 {{ data.overview.costCoverage === null ? '未知' : `${Math.round(data.overview.costCoverage * 100)}%` }}<template v-if="data.overview.costUsd === null"> · 已知費用 {{ formatUsd(data.overview.partialCostUsd) }}</template></span></article>
+             <article class="kpi-panel"><span class="stat-label">事件／工作階段</span><strong>{{ formatNumber(data.overview.eventCount) }} / {{ formatNumber(totalSessions) }}</strong><span class="kpi-meta">事件 · 不重複工作階段 · 已載入 {{ visibleSessions.length }} 筆</span></article>
+            <article class="kpi-panel"><span class="stat-label">快取命中率</span><strong>{{ averageCache === null ? '未知' : `${Math.round(averageCache * 100)}%` }}</strong><span class="kpi-meta">資料覆蓋 {{ data.overview.cacheCoverage === null ? '未知' : `${Math.round(data.overview.cacheCoverage * 100)}%` }} · {{ data.overview.cacheUnreportedEventCount }} 筆未回報</span></article>
           </section>
 
           <div class="evidence-grid">
