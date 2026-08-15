@@ -487,7 +487,10 @@ public sealed class DataStorageTests
     public void ImportReportsEventProgressAndLeavesNoRowsWhenCancelled()
     {
         const string template = """{"type":"user","sessionId":"cancel-session","uuid":"cancel-turn-INDEX","timestamp":"2026-07-26T00:00:00Z","message":{"role":"user","content":"synthetic prompt INDEX"}}""";
-        var lines = new string[40];
+
+        // Longer than the import progress interval so at least one report lands mid-file, which is
+        // what lets the cancellation below happen after rows were already written.
+        var lines = new string[500];
         for (var index = 0; index < lines.Length; index++)
         {
             lines[index] = template.Replace("INDEX", index.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal);
@@ -511,17 +514,31 @@ public sealed class DataStorageTests
             Assert.Equal(lines.Length, reports[0].TotalEvents);
             Assert.Equal(0, reports[0].ProcessedEvents);
             Assert.Equal(lines.Length, reports[^1].ProcessedEvents);
+            Assert.Contains(reports, report => report.ProcessedEvents > 0 && report.ProcessedEvents < lines.Length);
 
             using var cancellation = new CancellationTokenSource();
             Execute(connection, "DELETE FROM sub_events; DELETE FROM turns; DELETE FROM sessions;");
+            var cancelledAfterEvents = 0;
             Assert.Throws<OperationCanceledException>(() => service.Import(
                 "cancelled-import",
                 path,
                 new ClaudeCodeCliAdapter(),
-                progress: _ => cancellation.Cancel(),
+                progress: report =>
+                {
+                    if (report.ProcessedEvents == 0)
+                    {
+                        return;
+                    }
+
+                    cancelledAfterEvents = report.ProcessedEvents;
+                    cancellation.Cancel();
+                },
                 cancellationToken: cancellation.Token));
+
+            Assert.InRange(cancelledAfterEvents, 1, lines.Length - 1);
             Assert.Equal(0L, Scalar<long>(connection, "SELECT COUNT(*) FROM sub_events;"));
             Assert.Equal(0L, Scalar<long>(connection, "SELECT COUNT(*) FROM sessions;"));
+            Assert.Equal(0L, Scalar<long>(connection, "SELECT COUNT(*) FROM turns;"));
         }
         finally
         {
