@@ -227,6 +227,12 @@ tbody tr:hover { background: var(--accent); }
 .skeleton { height: 7rem; border: 1px solid var(--border); background: var(--muted); }
 .empty-state { display: grid; justify-items: start; gap: 0.625rem; border: 1px solid var(--border); background: var(--card); padding: 2rem; }
 .empty-state p { max-width: 42rem; color: var(--muted-ink); }
+.job-progress { display: grid; gap: 0.375rem; }
+.job-progress-track { block-size: 0.25rem; border: 1px solid var(--border); background: var(--sunken); overflow: hidden; }
+.job-progress-bar { block-size: 100%; inline-size: 100%; background: var(--blue); transition: inline-size 200ms linear; }
+.job-progress-pending { inline-size: 40%; animation: job-progress-sweep 1.4s ease-in-out infinite; }
+.job-progress .rail-note { margin: 0; overflow-wrap: anywhere; }
+@keyframes job-progress-sweep { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
 
 .detail-list { display: grid; gap: 0.375rem; margin: 0; }
 .detail-list div { display: flex; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.375rem; }
@@ -315,6 +321,7 @@ code { border: 1px solid var(--border); border-radius: 0.375rem; background: var
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+  .job-progress-pending { inline-size: 100%; animation: none; transform: none; }
 }
 .topbar-nav { display: inline-flex; gap: .25rem; margin-left: auto; }
 .topbar-nav button { border: 1px solid transparent; background: transparent; color: var(--muted-ink); border-radius: 9999px; padding: .35rem .7rem; cursor: pointer; }

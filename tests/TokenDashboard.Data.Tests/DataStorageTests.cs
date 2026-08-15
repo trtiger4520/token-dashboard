@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Data.Sqlite;
 using TokenDashboard.Core;
 using TokenDashboard.Data;
@@ -236,11 +237,13 @@ public sealed class DataStorageTests
         var claude = service.Import(
             "claude-provider-import",
             Fixture("claude-provider-shape-synthetic.jsonl"),
-            new ClaudeCodeCliAdapter());
+            new ClaudeCodeCliAdapter(),
+            cancellationToken: TestContext.Current.CancellationToken);
         var codex = service.Import(
             "codex-provider-import",
             Fixture("codex-provider-shape-synthetic.jsonl"),
-            new CodexAppAdapter());
+            new CodexAppAdapter(),
+            cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(2, claude.ImportedEventCount);
         Assert.Equal(4, codex.ImportedEventCount);
@@ -306,8 +309,8 @@ public sealed class DataStorageTests
             var service = new ImportService(connection);
             var adapter = new ClaudeCodeAppAdapter();
 
-            var parent = service.Import("claude-parent-import", parentPath, adapter);
-            var sidechain = service.Import("claude-sidechain-import", sidechainPath, adapter);
+            var parent = service.Import("claude-parent-import", parentPath, adapter, cancellationToken: TestContext.Current.CancellationToken);
+            var sidechain = service.Import("claude-sidechain-import", sidechainPath, adapter, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(1, parent.ImportedEventCount);
             Assert.Equal(1, sidechain.ImportedEventCount);
@@ -348,8 +351,8 @@ public sealed class DataStorageTests
         var service = new ImportService(connection);
         var adapter = new CodexCliAdapter();
 
-        var first = service.Import("import-jsonl", Fixture("codex-synthetic.jsonl"), adapter);
-        var second = service.Import("import-jsonl", Fixture("codex-synthetic.jsonl"), adapter);
+        var first = service.Import("import-jsonl", Fixture("codex-synthetic.jsonl"), adapter, cancellationToken: TestContext.Current.CancellationToken);
+        var second = service.Import("import-jsonl", Fixture("codex-synthetic.jsonl"), adapter, cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(2, first.ImportedEventCount);
         Assert.Single(first.Errors);
@@ -432,7 +435,7 @@ public sealed class DataStorageTests
         SchemaMigrator.Migrate(connection);
 
         Assert.Equal(SchemaMigrator.CurrentVersion, Scalar<long>(connection, "SELECT MAX(version) FROM schema_versions;"));
-        Assert.Equal(7L, Scalar<long>(connection, "SELECT COUNT(*) FROM schema_versions;"));
+        Assert.Equal(8L, Scalar<long>(connection, "SELECT COUNT(*) FROM schema_versions;"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'provider';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'mode';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM pragma_table_info('price_versions') WHERE name = 'minimum_input_tokens';"));
@@ -448,6 +451,82 @@ public sealed class DataStorageTests
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'project_tags';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'session_usage_rollups';"));
         Assert.Equal(1L, Scalar<long>(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'source_file_manifest';"));
+    }
+
+    [Fact]
+    public void ProviderShapeIsRecognizedForSourcesLargerThanTheBufferedParseThreshold()
+    {
+        const string template = """{"type":"assistant","sessionId":"large-session","uuid":"large-turn-INDEX","timestamp":"2026-07-26T00:00:00Z","message":{"role":"assistant","model":"claude-sonnet-4","content":[{"type":"text","text":"PADDING"}],"usage":{"input_tokens":10,"output_tokens":5}}}""";
+        var padding = new string('x', 64 * 1024);
+        var lines = new string[160];
+        for (var index = 0; index < lines.Length; index++)
+        {
+            lines[index] = template
+                .Replace("INDEX", index.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+                .Replace("PADDING", padding, StringComparison.Ordinal);
+        }
+
+        var path = WriteTemporaryJsonLines(lines);
+        try
+        {
+            Assert.True(new FileInfo(path).Length > 8 * 1024 * 1024);
+
+            var result = new ClaudeCodeCliAdapter().Parse(path, TestContext.Current.CancellationToken);
+
+            Assert.Equal(lines.Length, result.Events.Count);
+            Assert.All(result.Events, item => Assert.Equal("large-session", item.SessionId));
+            Assert.All(result.Events, item => Assert.NotEmpty(item.TokenCounts));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ImportReportsEventProgressAndLeavesNoRowsWhenCancelled()
+    {
+        const string template = """{"type":"user","sessionId":"cancel-session","uuid":"cancel-turn-INDEX","timestamp":"2026-07-26T00:00:00Z","message":{"role":"user","content":"synthetic prompt INDEX"}}""";
+        var lines = new string[40];
+        for (var index = 0; index < lines.Length; index++)
+        {
+            lines[index] = template.Replace("INDEX", index.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal);
+        }
+
+        var path = WriteTemporaryJsonLines(lines);
+        try
+        {
+            using var connection = OpenConnection();
+            var service = new ImportService(connection);
+            var reports = new List<ImportProgress>();
+
+            var completed = service.Import(
+                "progress-import",
+                path,
+                new ClaudeCodeCliAdapter(),
+                progress: reports.Add,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(lines.Length, completed.ImportedEventCount);
+            Assert.Equal(lines.Length, reports[0].TotalEvents);
+            Assert.Equal(0, reports[0].ProcessedEvents);
+            Assert.Equal(lines.Length, reports[^1].ProcessedEvents);
+
+            using var cancellation = new CancellationTokenSource();
+            Execute(connection, "DELETE FROM sub_events; DELETE FROM turns; DELETE FROM sessions;");
+            Assert.Throws<OperationCanceledException>(() => service.Import(
+                "cancelled-import",
+                path,
+                new ClaudeCodeCliAdapter(),
+                progress: _ => cancellation.Cancel(),
+                cancellationToken: cancellation.Token));
+            Assert.Equal(0L, Scalar<long>(connection, "SELECT COUNT(*) FROM sub_events;"));
+            Assert.Equal(0L, Scalar<long>(connection, "SELECT COUNT(*) FROM sessions;"));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     private static SqliteConnection OpenConnection()

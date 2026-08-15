@@ -4,7 +4,7 @@ namespace TokenDashboard.Data;
 
 public sealed class SchemaMigrator
 {
-    public const int CurrentVersion = 8;
+    public const int CurrentVersion = 9;
 
     public static void Migrate(SqliteConnection connection)
     {
@@ -33,7 +33,8 @@ public sealed class SchemaMigrator
             ApplyLatestSchema(transaction);
             ApplyVersionSeven(transaction);
             ApplyVersionEight(transaction);
-            Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) VALUES (8, $appliedAtUtc);", ("$appliedAtUtc", UtcNow()));
+            ApplyVersionNine(transaction);
+            Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) VALUES (9, $appliedAtUtc);", ("$appliedAtUtc", UtcNow()));
         }
         else
         {
@@ -83,6 +84,13 @@ public sealed class SchemaMigrator
             {
                 ApplyVersionEight(transaction);
                 Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) SELECT 8, $appliedAtUtc WHERE NOT EXISTS (SELECT 1 FROM schema_versions WHERE version = 8);", ("$appliedAtUtc", UtcNow()));
+                version = 8;
+            }
+
+            if (version < 9)
+            {
+                ApplyVersionNine(transaction);
+                Execute(transaction, "INSERT INTO schema_versions (version, applied_at_utc) SELECT 9, $appliedAtUtc WHERE NOT EXISTS (SELECT 1 FROM schema_versions WHERE version = 9);", ("$appliedAtUtc", UtcNow()));
             }
         }
 
@@ -468,6 +476,22 @@ public sealed class SchemaMigrator
             CREATE INDEX IF NOT EXISTS ix_session_rollups_activity ON session_usage_rollups (last_activity_at_utc, session_id);
             CREATE INDEX IF NOT EXISTS ix_daily_rollups_date ON daily_usage_rollups (bucket_date, source_id);
             """);
+    }
+
+    private static void ApplyVersionNine(SqliteTransaction transaction)
+    {
+        if (TableExists(transaction, "sub_events"))
+        {
+            Execute(transaction, """
+                CREATE INDEX IF NOT EXISTS ix_sub_events_turn_occurred
+                    ON sub_events (turn_id, occurred_at_utc, event_fingerprint);
+                """);
+        }
+
+        if (TableExists(transaction, "contents"))
+        {
+            Execute(transaction, "CREATE INDEX IF NOT EXISTS ix_contents_turn ON contents (turn_id);");
+        }
     }
 
     private static void AddColumnIfMissing(SqliteTransaction transaction, string columnName, string definition)
