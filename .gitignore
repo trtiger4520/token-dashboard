@@ -32,3 +32,7 @@ export/
 artifacts/
 
 .codex/environments/runtime/
+
+# Impeccable hook 產生的本機 session 快取，內含絕對路徑與 session id
+# hook 會依執行目錄各自產生一份，因此不限於根目錄
+**/.impeccable/hook.cache.json
