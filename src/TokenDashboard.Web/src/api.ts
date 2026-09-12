@@ -32,6 +32,9 @@ function syncProgressSignature(status: SyncStatus): string {
     status.totalFiles ?? 0,
     status.processedFiles ?? 0,
     status.importedEvents ?? 0,
+    status.warningCount ?? 0,
+    status.currentFileName ?? '',
+    status.currentFileTotalEvents ?? 0,
     status.currentFileProcessedEvents ?? 0
   ].join('|')
 }

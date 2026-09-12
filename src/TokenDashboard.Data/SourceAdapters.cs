@@ -438,16 +438,31 @@ internal static class SourceFileParser
 
     private static ParseResult ParseJsonLines(string text, SourceAdapterKind adapterKind, CancellationToken cancellationToken)
     {
-        var providerResult = ProviderLogParser.ParseJsonLines(text, adapterKind, cancellationToken);
-        if (providerResult.Recognized)
+        return ParseJsonLines(text.Split(["\r\n", "\n"], StringSplitOptions.None), adapterKind, cancellationToken);
+    }
+
+    private static ParseResult ParseJsonLines(
+        IEnumerable<string> lines,
+        SourceAdapterKind adapterKind,
+        CancellationToken cancellationToken)
+    {
+        if (ProviderLogParser.IsRecognized(lines, adapterKind, cancellationToken))
         {
-            return providerResult.Result;
+            return ProviderLogParser.ParseJsonLines(lines, adapterKind, cancellationToken).Result;
         }
 
+        return ParseJsonLinesFallback(lines, adapterKind, cancellationToken);
+    }
+
+    private static ParseResult ParseJsonLinesFallback(
+        IEnumerable<string> lines,
+        SourceAdapterKind adapterKind,
+        CancellationToken cancellationToken)
+    {
         var events = new List<NormalizedEvent>();
         var errors = new List<ParseError>();
         var lineNumber = 0;
-        foreach (var line in text.Split(["\r\n", "\n"], StringSplitOptions.None))
+        foreach (var line in lines)
         {
             lineNumber++;
             cancellationToken.ThrowIfCancellationRequested();
@@ -487,31 +502,7 @@ internal static class SourceFileParser
             return ParseJsonLines(bufferedReader.ReadToEnd(), adapterKind, cancellationToken);
         }
 
-        var providerResult = ProviderLogParser.ParseJsonLines(ReadLines(stream), adapterKind, cancellationToken);
-        if (providerResult.Recognized) return providerResult.Result;
-
-        var events = new List<NormalizedEvent>();
-        var errors = new List<ParseError>();
-        var lineNumber = 0;
-        foreach (var line in ReadLines(stream))
-        {
-            lineNumber++;
-            cancellationToken.ThrowIfCancellationRequested();
-            if (string.IsNullOrWhiteSpace(line)) continue;
-            try
-            {
-                using var document = JsonDocument.Parse(line);
-                var result = NormalizeElement(document.RootElement, adapterKind, lineNumber);
-                if (result.Event is not null) events.Add(result.Event);
-                if (result.Error is not null) errors.Add(result.Error);
-            }
-            catch (JsonException exception)
-            {
-                errors.Add(new ParseError(lineNumber, exception.Message));
-            }
-        }
-
-        return new ParseResult(events, errors, errors.Count == 0 ? AdapterCapabilityStatus.Available : AdapterCapabilityStatus.ParseFallback);
+        return ParseJsonLines(ReadLines(stream), adapterKind, cancellationToken);
     }
 
     /// <summary>

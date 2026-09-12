@@ -380,6 +380,27 @@ describe('dashboard API states and interaction surface', () => {
     expect(seen).toEqual(['scanning:12', 'importing:1', 'importing:3'])
   })
 
+  it('resets the stall timeout when warning or current-file progress changes', async () => {
+    vi.useFakeTimers()
+    try {
+      const statuses = [
+        { syncId: 'sync-3', status: 'running', phase: 'importing', totalFiles: 2, processedFiles: 1, importedEvents: 10, warningCount: 0, currentFileName: 'first.jsonl', currentFileTotalEvents: 0, currentFileProcessedEvents: 0 },
+        { syncId: 'sync-3', status: 'running', phase: 'importing', totalFiles: 2, processedFiles: 1, importedEvents: 10, warningCount: 1, currentFileName: 'first.jsonl', currentFileTotalEvents: 100, currentFileProcessedEvents: 0 },
+        { syncId: 'sync-3', status: 'running', phase: 'importing', totalFiles: 2, processedFiles: 1, importedEvents: 10, warningCount: 1, currentFileName: 'second.jsonl', currentFileTotalEvents: 100, currentFileProcessedEvents: 0 },
+        { syncId: 'sync-3', status: 'completed', phase: 'importing', totalFiles: 2, processedFiles: 2, importedEvents: 20, warningCount: 1 }
+      ]
+      let index = 0
+      fetchMock.mockImplementation(async () => jsonResponse(statuses[Math.min(index++, statuses.length - 1)]))
+
+      const pending = new TokenDashboardClient().waitForSync('sync-3', 100, 50)
+      await vi.advanceTimersByTimeAsync(300)
+
+      await expect(pending).resolves.toMatchObject({ status: 'completed' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('clears a source preview when its path or adapter changes', async () => {
     window.history.replaceState({}, document.title, '/settings')
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
