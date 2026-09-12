@@ -26,27 +26,43 @@ public static class UsageRollupService
         Execute(transaction, """
             WITH ranked_events AS
             (
-                SELECT
-                    se.turn_id,
-                    se.event_fingerprint,
-                    se.model,
-                    (
-                        SELECT tool
-                        FROM sub_events AS tool_event
-                        WHERE tool_event.turn_id = se.turn_id
-                          AND trim(tool_event.tool) <> ''
-                        ORDER BY tool_event.occurred_at_utc, tool_event.event_fingerprint
-                        LIMIT 1
-                    ) AS first_tool,
-                    ROW_NUMBER() OVER
-                    (
-                        PARTITION BY se.turn_id
-                        ORDER BY CASE WHEN trim(se.model) <> '' THEN 0 ELSE 1 END,
-                                 se.occurred_at_utc,
-                                 se.event_fingerprint
-                    ) AS row_number
-                FROM sub_events AS se
-                WHERE se.turn_id IS NOT NULL
+                SELECT turn_id, event_fingerprint, model
+                FROM
+                (
+                    SELECT
+                        se.turn_id,
+                        se.event_fingerprint,
+                        se.model,
+                        ROW_NUMBER() OVER
+                        (
+                            PARTITION BY se.turn_id
+                            ORDER BY CASE WHEN trim(se.model) <> '' THEN 0 ELSE 1 END,
+                                     se.occurred_at_utc,
+                                     se.event_fingerprint
+                        ) AS row_number
+                    FROM sub_events AS se
+                    WHERE se.turn_id IS NOT NULL
+                )
+                WHERE row_number = 1
+            ),
+            first_tools AS
+            (
+                SELECT turn_id, tool
+                FROM
+                (
+                    SELECT
+                        se.turn_id,
+                        se.tool,
+                        ROW_NUMBER() OVER
+                        (
+                            PARTITION BY se.turn_id
+                            ORDER BY se.occurred_at_utc, se.event_fingerprint
+                        ) AS row_number
+                    FROM sub_events AS se
+                    WHERE se.turn_id IS NOT NULL
+                      AND trim(se.tool) <> ''
+                )
+                WHERE row_number = 1
             ),
             event_counts AS
             (
@@ -73,7 +89,7 @@ public static class UsageRollupService
                 t.occurred_at_utc,
                 s.source_id,
                 COALESCE(r.model, ''),
-                COALESCE(r.first_tool, ''),
+                COALESCE(ft.tool, ''),
                 COALESCE(ec.event_count, 0),
                 r.event_fingerprint,
                 COALESCE(tc.total_tokens, 0),
@@ -81,7 +97,8 @@ public static class UsageRollupService
                 $now
             FROM turns AS t
             INNER JOIN sessions AS s ON s.session_id = t.session_id
-            LEFT JOIN ranked_events AS r ON r.turn_id = t.turn_id AND r.row_number = 1
+            LEFT JOIN ranked_events AS r ON r.turn_id = t.turn_id
+            LEFT JOIN first_tools AS ft ON ft.turn_id = t.turn_id
             LEFT JOIN event_counts AS ec ON ec.turn_id = t.turn_id
             LEFT JOIN token_counts AS tc ON tc.turn_id = t.turn_id;
             """, ("$now", UtcNow()));

@@ -145,6 +145,70 @@ public sealed class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task ShutdownCancelsARunningImportInsteadOfDrainingTheWholeSource()
+    {
+        var directory = CreateSyntheticClaudeSource(fileCount: 30, eventsPerFile: 3000);
+        try
+        {
+            await using var app = ProgramEntry.BuildApplication([
+                $"--TokenDashboard:ConnectionString=Data Source=shutdown-{Guid.NewGuid():N};Mode=Memory;Cache=Shared",
+                "--TokenDashboard:OpenBrowser=false"
+            ]);
+            await app.StartAsync(TestContext.Current.CancellationToken);
+            var jobs = app.Services.GetRequiredService<SyncJobService>();
+            Assert.True(jobs.TryEnqueue(new SyncRequest("claude-code-cli", [directory]), out var syncId, out _));
+
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                if (jobs.TryGet(syncId, out var running) && running!.Phase == "importing" && running.ProcessedFiles > 0)
+                {
+                    break;
+                }
+
+                await Task.Delay(25, TestContext.Current.CancellationToken);
+            }
+
+            Assert.True(jobs.TryGet(syncId, out var started) && started!.Phase == "importing" && started.ProcessedFiles > 0, "The import never reported per-file progress");
+
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            await app.StopAsync(TestContext.Current.CancellationToken);
+            watch.Stop();
+
+            Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5), $"Shutdown waited {watch.Elapsed} for the running import");
+            Assert.True(jobs.TryGet(syncId, out var finished));
+            Assert.Equal("cancelled", finished!.Status);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static string CreateSyntheticClaudeSource(int fileCount, int eventsPerFile)
+    {
+        const string template = """{"type":"assistant","sessionId":"shutdown-session-FILE","uuid":"shutdown-turn-FILE-INDEX","timestamp":"2026-07-26T00:00:00Z","message":{"role":"assistant","model":"claude-sonnet-4","content":[{"type":"text","text":"synthetic shutdown payload INDEX with enough words to make indexing measurable"}],"usage":{"input_tokens":30,"output_tokens":12}}}""";
+        var directory = Path.Combine(Path.GetTempPath(), $"token-dashboard-shutdown-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        for (var file = 0; file < fileCount; file++)
+        {
+            var builder = new StringBuilder();
+            for (var index = 0; index < eventsPerFile; index++)
+            {
+                builder
+                    .Append(template
+                        .Replace("FILE", file.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+                        .Replace("INDEX", index.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal))
+                    .Append('\n');
+            }
+
+            File.WriteAllText(Path.Combine(directory, $"session-{file}.jsonl"), builder.ToString(), Encoding.UTF8);
+        }
+
+        return directory;
+    }
+
+    [Fact]
     public async Task ExplicitContainerPortsPreserveLoopbackBinding()
     {
         var listenPort = AvailableLoopbackPort();

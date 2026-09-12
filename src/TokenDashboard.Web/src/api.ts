@@ -11,7 +11,7 @@ export interface SyncRequest {
 
 export interface SyncStatus {
   syncId: string
-  status: 'queued' | 'running' | 'completed' | 'partial' | 'failed' | string
+  status: 'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled' | string
   error?: string | null
   phase?: string
   totalFiles?: number
@@ -19,6 +19,24 @@ export interface SyncStatus {
   importedEvents?: number
   warningCount?: number
   currentFileName?: string | null
+  currentFileTotalEvents?: number
+  currentFileProcessedEvents?: number
+}
+
+const terminalSyncStatuses = ['completed', 'partial', 'failed', 'cancelled']
+
+function syncProgressSignature(status: SyncStatus): string {
+  return [
+    status.status,
+    status.phase ?? '',
+    status.totalFiles ?? 0,
+    status.processedFiles ?? 0,
+    status.importedEvents ?? 0,
+    status.warningCount ?? 0,
+    status.currentFileName ?? '',
+    status.currentFileTotalEvents ?? 0,
+    status.currentFileProcessedEvents ?? 0
+  ].join('|')
 }
 
 export interface SourceDiscoveryResult {
@@ -525,16 +543,34 @@ export class TokenDashboardClient {
     return (await response.json()) as SyncStatus
   }
 
-  async waitForSync(syncId: string, intervalMs = 500, timeoutMs = 5 * 60 * 1000): Promise<SyncStatus> {
-    const deadline = Date.now() + Math.max(0, timeoutMs)
-    let delay = Math.max(0, intervalMs)
+  /**
+   * Polls until the job reaches a terminal status. `stallTimeoutMs` measures time without any
+   * progress rather than total run time, so a long but advancing import is never abandoned.
+   */
+  async waitForSync(
+    syncId: string,
+    intervalMs = 500,
+    stallTimeoutMs = 5 * 60 * 1000,
+    onProgress?: (status: SyncStatus) => void
+  ): Promise<SyncStatus> {
+    const delay = Math.max(0, intervalMs)
+    let signature = ''
+    let lastProgressAt = Date.now()
     for (;;) {
       const status = await this.getSyncStatus(syncId)
-      if (['completed', 'partial', 'failed'].includes(status.status)) return status
-      const remainingMs = deadline - Date.now()
-      if (remainingMs <= 0) throw new Error('同步工作等待逾時，請稍後重新整理狀態')
-      await new Promise((resolve) => window.setTimeout(resolve, Math.min(delay, remainingMs)))
-      delay = Math.min(2000, Math.round(delay * 1.5))
+      onProgress?.(status)
+      if (terminalSyncStatuses.includes(status.status)) return status
+      const current = syncProgressSignature(status)
+      if (current === signature) {
+        if (Date.now() - lastProgressAt >= Math.max(0, stallTimeoutMs)) {
+          throw new Error('同步工作等待逾時，請稍後重新整理狀態')
+        }
+      } else {
+        signature = current
+        lastProgressAt = Date.now()
+      }
+
+      await new Promise((resolve) => window.setTimeout(resolve, delay))
     }
   }
 

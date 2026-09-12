@@ -438,16 +438,31 @@ internal static class SourceFileParser
 
     private static ParseResult ParseJsonLines(string text, SourceAdapterKind adapterKind, CancellationToken cancellationToken)
     {
-        var providerResult = ProviderLogParser.ParseJsonLines(text, adapterKind, cancellationToken);
-        if (providerResult.Recognized)
+        return ParseJsonLines(text.Split(["\r\n", "\n"], StringSplitOptions.None), adapterKind, cancellationToken);
+    }
+
+    private static ParseResult ParseJsonLines(
+        IEnumerable<string> lines,
+        SourceAdapterKind adapterKind,
+        CancellationToken cancellationToken)
+    {
+        if (ProviderLogParser.IsRecognized(lines, adapterKind, cancellationToken))
         {
-            return providerResult.Result;
+            return ProviderLogParser.ParseJsonLines(lines, adapterKind, cancellationToken).Result;
         }
 
+        return ParseJsonLinesFallback(lines, adapterKind, cancellationToken);
+    }
+
+    private static ParseResult ParseJsonLinesFallback(
+        IEnumerable<string> lines,
+        SourceAdapterKind adapterKind,
+        CancellationToken cancellationToken)
+    {
         var events = new List<NormalizedEvent>();
         var errors = new List<ParseError>();
         var lineNumber = 0;
-        foreach (var line in text.Split(["\r\n", "\n"], StringSplitOptions.None))
+        foreach (var line in lines)
         {
             lineNumber++;
             cancellationToken.ThrowIfCancellationRequested();
@@ -481,40 +496,27 @@ internal static class SourceFileParser
 
     private static ParseResult ParseJsonLines(Stream stream, SourceAdapterKind adapterKind, CancellationToken cancellationToken)
     {
-        if (stream.CanSeek && stream.Length <= 8 * 1024 * 1024)
+        if (!stream.CanSeek)
         {
             using var bufferedReader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1024, leaveOpen: true);
-            var buffered = bufferedReader.ReadToEnd();
-            var providerResult = ProviderLogParser.ParseJsonLines(buffered, adapterKind, cancellationToken);
-            if (providerResult.Recognized) return providerResult.Result;
-            return ParseJsonLines(buffered, adapterKind, cancellationToken);
+            return ParseJsonLines(bufferedReader.ReadToEnd(), adapterKind, cancellationToken);
         }
 
-        if (stream.CanSeek) stream.Position = 0;
-        using var reader = new StreamReader(stream);
-        var events = new List<NormalizedEvent>();
-        var errors = new List<ParseError>();
-        var lineNumber = 0;
-        string? line;
-        while ((line = reader.ReadLine()) is not null)
+        return ParseJsonLines(ReadLines(stream), adapterKind, cancellationToken);
+    }
+
+    /// <summary>
+    /// Streams a seekable JSON Lines source from the beginning so that provider-aware parsing runs
+    /// for every file size instead of only for sources small enough to buffer into a single string.
+    /// </summary>
+    private static IEnumerable<string> ReadLines(Stream stream)
+    {
+        stream.Position = 0;
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 64 * 1024, leaveOpen: true);
+        while (reader.ReadLine() is { } line)
         {
-            lineNumber++;
-            cancellationToken.ThrowIfCancellationRequested();
-            if (string.IsNullOrWhiteSpace(line)) continue;
-            try
-            {
-                using var document = JsonDocument.Parse(line);
-                var result = NormalizeElement(document.RootElement, adapterKind, lineNumber);
-                if (result.Event is not null) events.Add(result.Event);
-                if (result.Error is not null) errors.Add(result.Error);
-            }
-            catch (JsonException exception)
-            {
-                errors.Add(new ParseError(lineNumber, exception.Message));
-            }
+            yield return line;
         }
-
-        return new ParseResult(events, errors, errors.Count == 0 ? AdapterCapabilityStatus.Available : AdapterCapabilityStatus.ParseFallback);
     }
 
     private static ParseResult ParseCsv(string text, SourceAdapterKind adapterKind, CancellationToken cancellationToken)

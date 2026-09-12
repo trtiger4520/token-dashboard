@@ -8,18 +8,77 @@ internal sealed record ProviderParseAttempt(bool Recognized, ParseResult Result)
 
 internal static class ProviderLogParser
 {
+    private const int RecognitionLineLimit = 64;
+    private const int RecognitionPhysicalLineLimit = 256;
+
+    public static bool IsRecognized(
+        IEnumerable<string> lines,
+        SourceAdapterKind adapterKind,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(lines);
+
+        var physicalLineCount = 0;
+        var nonEmptyLineCount = 0;
+        foreach (var line in lines)
+        {
+            physicalLineCount++;
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                if (physicalLineCount >= RecognitionPhysicalLineLimit)
+                {
+                    break;
+                }
+
+                continue;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            nonEmptyLineCount++;
+
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                if (IsRecognized(document.RootElement, adapterKind))
+                {
+                    return true;
+                }
+            }
+            catch (JsonException)
+            {
+                // Let the complete fallback parse report malformed lines
+            }
+
+            if (nonEmptyLineCount >= RecognitionLineLimit ||
+                physicalLineCount >= RecognitionPhysicalLineLimit)
+            {
+                break;
+            }
+        }
+
+        return false;
+    }
+
     public static ProviderParseAttempt ParseJsonLines(
         string text,
         SourceAdapterKind adapterKind,
         CancellationToken cancellationToken)
     {
+        return ParseJsonLines(Lines(text), adapterKind, cancellationToken);
+    }
+
+    public static ProviderParseAttempt ParseJsonLines(
+        IEnumerable<string> lines,
+        SourceAdapterKind adapterKind,
+        CancellationToken cancellationToken)
+    {
         return adapterKind is SourceAdapterKind.ClaudeCodeApp or SourceAdapterKind.ClaudeCodeCli
-            ? ParseClaude(text, adapterKind, cancellationToken)
-            : ParseCodex(text, adapterKind, cancellationToken);
+            ? ParseClaude(lines, adapterKind, cancellationToken)
+            : ParseCodex(lines, adapterKind, cancellationToken);
     }
 
     private static ProviderParseAttempt ParseClaude(
-        string text,
+        IEnumerable<string> lines,
         SourceAdapterKind adapterKind,
         CancellationToken cancellationToken)
     {
@@ -28,7 +87,7 @@ internal static class ProviderLogParser
         var recognized = false;
         var lineNumber = 0;
 
-        foreach (var line in Lines(text))
+        foreach (var line in lines)
         {
             lineNumber++;
             cancellationToken.ThrowIfCancellationRequested();
@@ -42,8 +101,7 @@ internal static class ProviderLogParser
                 using var document = JsonDocument.Parse(line);
                 var root = document.RootElement;
                 var recordType = GetString(root, "type");
-                if (IsClaudeRecordType(recordType) &&
-                    !string.IsNullOrWhiteSpace(GetString(root, "sessionId", "session_id")))
+                if (IsRecognized(root, adapterKind))
                 {
                     recognized = true;
                 }
@@ -132,13 +190,12 @@ internal static class ProviderLogParser
     }
 
     private static ProviderParseAttempt ParseCodex(
-        string text,
+        IEnumerable<string> textLines,
         SourceAdapterKind adapterKind,
         CancellationToken cancellationToken)
     {
-        var lines = ReadJsonLines(text, cancellationToken, out var errors);
-        var recognized = lines.Any(static item =>
-            GetString(item.Element, "type") is "session_meta" or "turn_context" or "response_item" or "event_msg");
+        var lines = ReadJsonLines(textLines, cancellationToken, out var errors);
+        var recognized = lines.Any(item => IsRecognized(item.Element, adapterKind));
         if (!recognized)
         {
             return new ProviderParseAttempt(false, Result([], errors));
@@ -344,6 +401,14 @@ internal static class ProviderLogParser
         return new ProviderParseAttempt(true, Result(events, errors));
     }
 
+    private static bool IsRecognized(JsonElement root, SourceAdapterKind adapterKind)
+    {
+        return adapterKind is SourceAdapterKind.ClaudeCodeApp or SourceAdapterKind.ClaudeCodeCli
+            ? IsClaudeRecordType(GetString(root, "type")) &&
+              !string.IsNullOrWhiteSpace(GetString(root, "sessionId", "session_id"))
+            : GetString(root, "type") is "session_meta" or "turn_context" or "response_item" or "event_msg";
+    }
+
     private static CodexEvent? ParseCodexResponse(
         JsonElement payload,
         Dictionary<string, string> toolNames)
@@ -469,14 +534,14 @@ internal static class ProviderLogParser
     }
 
     private static List<JsonLine> ReadJsonLines(
-        string text,
+        IEnumerable<string> lines,
         CancellationToken cancellationToken,
         out List<ParseError> errors)
     {
         var rows = new List<JsonLine>();
         errors = [];
         var lineNumber = 0;
-        foreach (var line in Lines(text))
+        foreach (var line in lines)
         {
             lineNumber++;
             cancellationToken.ThrowIfCancellationRequested();

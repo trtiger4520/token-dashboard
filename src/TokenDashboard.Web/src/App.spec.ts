@@ -325,6 +325,82 @@ describe('dashboard API states and interaction surface', () => {
     expect(wrapper.text()).not.toContain('The process cannot access the file')
   })
 
+  it('shows file and event progress while an import job is still running', async () => {
+    let polls = 0
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/api/sources/import') && init?.method === 'POST') {
+        return jsonResponse({ syncId: 'import-1', status: 'queued' }, 202)
+      }
+      if (String(input).endsWith('/api/sync/import-1')) {
+        polls += 1
+        return polls === 1
+          ? jsonResponse({ syncId: 'import-1', status: 'running', phase: 'importing', totalFiles: 4, processedFiles: 1, importedEvents: 1200, warningCount: 0, currentFileName: 'session-2.jsonl', currentFileTotalEvents: 800, currentFileProcessedEvents: 200 })
+          : jsonResponse({ syncId: 'import-1', status: 'completed', phase: 'importing', totalFiles: 4, processedFiles: 4, importedEvents: 4800, warningCount: 0 })
+      }
+
+      return dashboardFetch(input, init)
+    })
+    const wrapper = mount(App)
+    await flushPromises()
+    const input = wrapper.get('#control-rail input[type="file"]')
+    const file = new File(['{"event":"tool"}'], 'codex-log.json', { type: 'application/json' })
+    Object.defineProperty(file, 'text', { value: async () => '{"event":"tool"}' })
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [file] })
+
+    await input.trigger('change')
+    await flushPromises()
+
+    const progressbar = wrapper.get('[role="progressbar"]')
+    expect(progressbar.attributes('aria-valuenow')).toBe('31')
+    expect(progressbar.text()).toContain('匯入事件')
+    expect(progressbar.text()).toContain('檔案 1 / 4')
+    expect(progressbar.text()).toContain('本檔事件 200 / 800')
+    expect(progressbar.text()).toContain('session-2.jsonl')
+
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    await flushPromises()
+
+    expect(wrapper.find('[role="progressbar"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('codex-log.json 已完成匯入')
+  })
+
+  it('reports every polled status to the progress listener without abandoning an advancing job', async () => {
+    const statuses = [
+      { syncId: 'sync-2', status: 'running', phase: 'scanning', processedFiles: 12 },
+      { syncId: 'sync-2', status: 'running', phase: 'importing', totalFiles: 3, processedFiles: 1, importedEvents: 40 },
+      { syncId: 'sync-2', status: 'completed', phase: 'importing', totalFiles: 3, processedFiles: 3, importedEvents: 120 }
+    ]
+    let index = 0
+    fetchMock.mockImplementation(async () => jsonResponse(statuses[Math.min(index++, statuses.length - 1)]))
+
+    const seen: string[] = []
+    const status = await new TokenDashboardClient().waitForSync('sync-2', 0, 20, (update) => seen.push(`${update.phase}:${update.processedFiles ?? 0}`))
+
+    expect(status.status).toBe('completed')
+    expect(seen).toEqual(['scanning:12', 'importing:1', 'importing:3'])
+  })
+
+  it('resets the stall timeout when warning or current-file progress changes', async () => {
+    vi.useFakeTimers()
+    try {
+      const statuses = [
+        { syncId: 'sync-3', status: 'running', phase: 'importing', totalFiles: 2, processedFiles: 1, importedEvents: 10, warningCount: 0, currentFileName: 'first.jsonl', currentFileTotalEvents: 0, currentFileProcessedEvents: 0 },
+        { syncId: 'sync-3', status: 'running', phase: 'importing', totalFiles: 2, processedFiles: 1, importedEvents: 10, warningCount: 1, currentFileName: 'first.jsonl', currentFileTotalEvents: 100, currentFileProcessedEvents: 0 },
+        { syncId: 'sync-3', status: 'running', phase: 'importing', totalFiles: 2, processedFiles: 1, importedEvents: 10, warningCount: 1, currentFileName: 'second.jsonl', currentFileTotalEvents: 100, currentFileProcessedEvents: 0 },
+        { syncId: 'sync-3', status: 'completed', phase: 'importing', totalFiles: 2, processedFiles: 2, importedEvents: 20, warningCount: 1 }
+      ]
+      let index = 0
+      fetchMock.mockImplementation(async () => jsonResponse(statuses[Math.min(index++, statuses.length - 1)]))
+
+      const pending = new TokenDashboardClient().waitForSync('sync-3', 100, 50)
+      await vi.advanceTimersByTimeAsync(300)
+
+      await expect(pending).resolves.toMatchObject({ status: 'completed' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('clears a source preview when its path or adapter changes', async () => {
     window.history.replaceState({}, document.title, '/settings')
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {

@@ -34,6 +34,7 @@ const managedSources = ref<ManagedSource[]>([])
 const previewResult = ref<Record<string, unknown> | null>(null)
 const settingsLoading = ref(false)
 const dataJobActive = ref(false)
+const dataJobProgress = ref<SyncStatus | null>(null)
 const searchTerm = ref('')
 const searchResults = ref<Array<SearchResult & { title: string }>>([])
 const searchError = ref('')
@@ -577,6 +578,40 @@ function removeAssignment(assignment: TagRecord): void {
   })
 }
 
+function trackDataJob(status: SyncStatus): void {
+  dataJobProgress.value = status
+}
+
+function dataJobPhaseLabel(status: SyncStatus): string {
+  if (status.status === 'queued') return '排隊中'
+  if (status.phase === 'scanning') return '掃描來源'
+  if (status.phase === 'importing') return '匯入事件'
+  if (status.phase === 'materializing') return '重建統計'
+  if (status.phase === 'cancelled') return '已取消'
+  return '處理中'
+}
+
+const dataJobProgressRatio = computed<number | null>(() => {
+  const status = dataJobProgress.value
+  const totalFiles = status?.totalFiles ?? 0
+  if (!status || totalFiles <= 0) return null
+  const currentFileTotal = status.currentFileTotalEvents ?? 0
+  const currentFileShare = currentFileTotal > 0 ? Math.min(1, (status.currentFileProcessedEvents ?? 0) / currentFileTotal) : 0
+  return Math.min(1, ((status.processedFiles ?? 0) + currentFileShare) / totalFiles)
+})
+
+const dataJobProgressLabel = computed(() => {
+  const status = dataJobProgress.value
+  if (!status) return ''
+  const parts = [dataJobPhaseLabel(status)]
+  if (status.phase === 'scanning') parts.push(`已檢查 ${formatNumber(status.processedFiles ?? 0)} 個檔案`)
+  else if ((status.totalFiles ?? 0) > 0) parts.push(`檔案 ${formatNumber(status.processedFiles ?? 0)} / ${formatNumber(status.totalFiles ?? 0)}`)
+  if ((status.currentFileTotalEvents ?? 0) > 0) parts.push(`本檔事件 ${formatNumber(status.currentFileProcessedEvents ?? 0)} / ${formatNumber(status.currentFileTotalEvents ?? 0)}`)
+  parts.push(`已匯入 ${formatNumber(status.importedEvents ?? 0)} 筆`)
+  if (status.currentFileName) parts.push(status.currentFileName)
+  return parts.join(' · ')
+})
+
 function dataJobMessage(status: SyncStatus, completedMessage: string): string {
   if (!status.error) return completedMessage
   if (/being used by another process|source file is currently in use/i.test(status.error)) {
@@ -594,9 +629,10 @@ async function onImport(event: Event): Promise<void> {
     return
   }
   dataJobActive.value = true
+  dataJobProgress.value = null
   try {
     const queued = await client.importFile(file, sourceAdapter.value)
-    const completed = await client.waitForSync(queued.syncId)
+    const completed = await client.waitForSync(queued.syncId, undefined, undefined, trackDataJob)
     operationMessage.value = dataJobMessage(completed, `${file.name} 已完成匯入`)
     await refresh()
   } catch (error) {
@@ -604,6 +640,7 @@ async function onImport(event: Event): Promise<void> {
     syncState.value = 'error'
   } finally {
     dataJobActive.value = false
+    dataJobProgress.value = null
     input.value = ''
   }
 }
@@ -717,6 +754,7 @@ async function syncSources(): Promise<void> {
     return
   }
   dataJobActive.value = true
+  dataJobProgress.value = null
   try {
     const suggested = typeof previewResult.value?.suggestedAdapter === 'string' ? previewResult.value.suggestedAdapter : undefined
     const adapter = sourceAdapter.value === 'auto' ? suggested?.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase() : sourceAdapter.value
@@ -727,7 +765,7 @@ async function syncSources(): Promise<void> {
     const request: SyncRequest = { adapter, paths: sourcePath.value ? [sourcePath.value] : undefined }
     const started = await client.startSync(request)
     operationMessage.value = `同步 ${started.status}`
-    const status = await client.waitForSync(started.syncId)
+    const status = await client.waitForSync(started.syncId, undefined, undefined, trackDataJob)
     operationMessage.value = dataJobMessage(status, `同步${status.status === 'partial' ? '部分完成' : '完成'}`)
     const partialSync = status.status === 'partial'
     syncState.value = partialSync ? 'partial' : status.status === 'failed' ? 'error' : syncState.value
@@ -738,6 +776,7 @@ async function syncSources(): Promise<void> {
     syncState.value = 'error'
   } finally {
     dataJobActive.value = false
+    dataJobProgress.value = null
   }
 }
 
@@ -757,14 +796,16 @@ async function recoverActiveJob(): Promise<void> {
     const active = await client.getActiveJob()
     if (!active) return
     dataJobActive.value = true
+    trackDataJob(active)
     operationMessage.value = `背景資料工作進行中 · ${active.phase ?? active.status}`
-    const completed = await client.waitForSync(active.syncId)
+    const completed = await client.waitForSync(active.syncId, undefined, undefined, trackDataJob)
     operationMessage.value = completed.error ?? `背景資料工作${completed.status === 'partial' ? '部分完成' : '完成'}`
     await refresh()
   } catch (error) {
     operationMessage.value = error instanceof Error ? error.message : '背景資料工作狀態讀取失敗'
   } finally {
     dataJobActive.value = false
+    dataJobProgress.value = null
   }
 }
 
@@ -1038,6 +1079,19 @@ onBeforeUnmount(() => {
           <label>Adapter<select v-model="sourceAdapter"><option value="auto">依檔名判斷</option><option value="claude-code-app">Claude Code App</option><option value="claude-code-cli">Claude Code CLI</option><option value="codex-app">Codex App</option><option value="codex-cli">Codex CLI</option></select></label>
           <label>自訂來源路徑<input v-model="sourcePath" placeholder="C:\\workspace\\logs" /></label>
           <div class="button-row"><button class="button button-secondary" type="button" :disabled="dataJobActive" @click="void discoverSources()">掃描來源</button><button class="button button-primary" type="button" :disabled="dataJobActive" @click="void syncSources()">開始同步</button></div>
+          <div
+            v-if="dataJobActive"
+            class="job-progress"
+            role="progressbar"
+            aria-label="資料工作進度"
+            :aria-valuemin="dataJobProgressRatio === null ? undefined : 0"
+            :aria-valuemax="dataJobProgressRatio === null ? undefined : 100"
+            :aria-valuenow="dataJobProgressRatio === null ? undefined : Math.round(dataJobProgressRatio * 100)"
+            :aria-valuetext="dataJobProgressLabel || '資料工作啟動中'"
+          >
+            <div class="job-progress-track"><div class="job-progress-bar" :class="{ 'job-progress-pending': dataJobProgressRatio === null }" :style="dataJobProgressRatio === null ? undefined : { inlineSize: `${Math.round(dataJobProgressRatio * 100)}%` }"></div></div>
+            <p class="rail-note mono">{{ dataJobProgressLabel || '資料工作啟動中' }}</p>
+          </div>
           <p v-if="discoveredSources.length" class="rail-note"><span v-for="source in discoveredSources" :key="source.adapter" class="discovery-result"><strong>{{ source.adapter }}</strong> · {{ source.paths.length ? `${source.paths.length} 個可用路徑` : '未發現路徑' }}</span></p>
           <label class="file-button" :class="{ disabled: dataJobActive }">匯入 JSON / CSV<input type="file" :disabled="dataJobActive" accept=".json,.csv,application/json,text/csv" @change="void onImport($event)" /></label>
         </section>
