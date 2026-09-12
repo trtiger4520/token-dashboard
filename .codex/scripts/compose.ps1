@@ -80,7 +80,7 @@ function Get-ComposeEnvironment {
 $composeEnvironment = Get-ComposeEnvironment
 $composeArguments = @(
     '--project-name', $composeEnvironment['COMPOSE_PROJECT_NAME'],
-    '--env-file', $runtimeEnvironmentFile
+    '--env-file', $runtimeEnvironmentFile,
     '--file', $composeFile
 )
 
@@ -93,7 +93,16 @@ else {
 
 Write-Output "Compose project: $($composeEnvironment['COMPOSE_PROJECT_NAME'])"
 Write-Output "Dashboard URL: http://127.0.0.1:$($composeEnvironment['TOKEN_DASHBOARD_PORT'])"
-& docker compose @composeArguments
+& docker compose version *> $null
+if ($LASTEXITCODE -eq 0) {
+    & docker compose @composeArguments
+}
+elseif (Get-Command docker-compose -ErrorAction SilentlyContinue) {
+    & docker-compose @composeArguments
+}
+else {
+    throw 'Docker Compose is required. Install Docker Desktop with the Compose plugin or docker-compose.'
+}
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
