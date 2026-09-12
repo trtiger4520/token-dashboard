@@ -6,16 +6,16 @@ name = "Token Dashboard"
 script = ""
 
 [setup.win32]
-script = "pwsh -NoProfile -File .codex/scripts/compose.ps1 -Action up"
+script = "pwsh -NoProfile -ExecutionPolicy Bypass -File .codex/scripts/compose.ps1 -Action up"
 
 [[actions]]
 name = "Run"
 icon = "run"
-command = "pwsh -NoProfile -File .codex/scripts/compose.ps1 -Action up"
+command = "pwsh -NoProfile -ExecutionPolicy Bypass -File .codex/scripts/compose.ps1 -Action up"
 platform = "win32"
 
 [[actions]]
 name = "Status"
 icon = "tool"
-command = "pwsh -NoProfile -File .codex/scripts/compose.ps1 -Action status"
+command = "pwsh -NoProfile -ExecutionPolicy Bypass -File .codex/scripts/compose.ps1 -Action status"
 platform = "win32"
